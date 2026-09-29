@@ -1,0 +1,49 @@
+{
+  "name": "helpzy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HELPZY - Find the Right Service, Right Around You. A local-services marketplace.",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "postinstall": "pnpm build:packages",
+    "dev": "pnpm --parallel --filter \"@helpzy/api\" --filter \"@helpzy/frontend\" dev",
+    "dev:api": "pnpm --filter \"@helpzy/api\" dev",
+    "dev:web": "pnpm --filter \"@helpzy/frontend\" dev",
+    "dev:android": "pnpm --filter \"@helpzy/frontend\" dev:android",
+    "dev:ios": "pnpm --filter \"@helpzy/frontend\" dev:ios",
+    "build": "pnpm --filter \"@helpzy/types\" --filter \"@helpzy/validation\" --filter \"@helpzy/config\" --filter \"@helpzy/api-client\" build && pnpm --filter \"@helpzy/api\" build && pnpm --filter \"@helpzy/frontend\" build",
+    "build:packages": "pnpm --filter \"./packages/**\" build",
+    "build:api": "pnpm --filter \"@helpzy/api\" build",
+    "build:web": "pnpm --filter \"@helpzy/frontend\" build:web",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "lint:fix": "pnpm -r lint:fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml}\"",
+    "test": "pnpm -r test && pnpm test:e2e",
+    "test:api": "pnpm --filter \"@helpzy/api\" test",
+    "test:api:e2e": "pnpm --filter \"@helpzy/api\" test:e2e",
+    "test:e2e": "pnpm --filter \"@helpzy/api\" test:e2e",
+    "smoke": "node scripts/smoke-api.mjs",
+    "clean": "pnpm -r exec rm -rf dist .next .expo node_modules/.cache",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@helpzy/api-client": "workspace:*",
+    "@helpzy/validation": "workspace:*",
+    "@types/node": "^24.10.1",
+    "dotenv": "^17.4.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4"
+  }
+}

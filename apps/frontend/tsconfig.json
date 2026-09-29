@@ -1,0 +1,22 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@helpzy/api-client": ["../../packages/api-client/src/index.ts"],
+      "@helpzy/config": ["../../packages/config/src/index.ts"],
+      "@helpzy/types": ["../../packages/types/src/index.ts"],
+      "@helpzy/validation": ["../../packages/validation/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "app.config.ts",
+    "nativewind-env.d.ts",
+    "expo-env.d.ts",
+    ".expo/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-android", "dist-ios"]
+}

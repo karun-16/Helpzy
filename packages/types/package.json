@@ -1,0 +1,31 @@
+{
+  "name": "@helpzy/types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared domain and transport types for HELPZY (web, android, ios, backend).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "react-native": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "react-native": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

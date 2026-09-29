@@ -1,0 +1,36 @@
+packages:
+  - 'apps/*'
+  - 'backend/*'
+  - 'packages/*'
+
+# pnpm reads project settings from this file (pnpm 10+), not from .npmrc.
+
+# Metro (used by Expo for web, Android and iOS) resolves modules from real file
+# paths inside pnpm's virtual store, so packages that React Native's native
+# modules import by bare name - expo-modules-core, react-native-css-interop,
+# @expo/metro-runtime and friends - are not reachable from the app folder.
+# Hoisting them into the workspace root is the configuration Expo documents for
+# pnpm projects; the alternative (node-linker: hoisted) would flatten the whole
+# tree and lose pnpm's strictness everywhere else.
+publicHoistPattern:
+  - '*expo*'
+  - '@expo/*'
+  - '*react-native*'
+  - '@react-native/*'
+  - react
+  - react-dom
+  - react-native-css-interop
+
+# Dependencies that legitimately need a postinstall build step. Every other
+# dependency has its lifecycle scripts blocked by default.
+# @parcel/watcher -> NestJS `start --watch` file watching
+# unrs-resolver   -> ESLint import resolution
+# @prisma/client, prisma, @prisma/engines -> Prisma engine download / client generation
+allowBuilds:
+  '@parcel/watcher': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true
+  unrs-resolver: true
+
+strictPeerDependencies: false

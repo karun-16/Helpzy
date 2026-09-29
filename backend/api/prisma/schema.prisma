@@ -1,0 +1,268 @@
+// HELPZY - Prisma schema
+//
+// Design rules:
+//  - Enum values mirror `packages/types/src/enums.ts` exactly. The shared
+//    package is the source of truth for the domain vocabulary; this file is the
+//    source of truth for persistence. They must not drift.
+//  - Money is `Decimal(10, 2)`, never a float.
+//  - Timestamps are stored in UTC (`timestamptz`).
+//  - Every model carries `createdAt` / `updatedAt`.
+//  - Soft deletes are avoided; `User.status` already expresses deactivation.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  PROFESSIONAL
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum BookingStatus {
+  REQUESTED
+  ACCEPTED
+  SCHEDULED
+  ON_THE_WAY
+  IN_PROGRESS
+  COMPLETED_BY_PROFESSIONAL
+  CUSTOMER_CONFIRMED
+  PAYMENT_PENDING
+  PAID
+  CLOSED
+  REJECTED
+  CANCELLED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  ONLINE
+  DIRECT
+}
+
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+enum AddressType {
+  HOME
+  WORK
+  OTHER
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  phone        String?    @unique
+  passwordHash String
+  fullName     String
+  avatarUrl    String?
+  role         UserRole   @default(CUSTOMER)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  professionalProfile ProfessionalProfile?
+  addresses           Address[]
+  bookingsAsCustomer  Booking[]        @relation("BookingCustomer")
+  services            Service[]        @relation("ServiceOwner")
+  reviewsWritten      Review[]         @relation("ReviewAuthor")
+
+  @@index([role, status])
+  @@map("users")
+}
+
+/// Provider-facing data. A user has at most one profile, created when a
+/// customer switches to the PROFESSIONAL role.
+model ProfessionalProfile {
+  id             String             @id @default(uuid()) @db.Uuid
+  userId         String             @unique @db.Uuid
+  businessName   String
+  bio            String?
+  verification   VerificationStatus @default(UNVERIFIED)
+  verifiedAt     DateTime?          @db.Timestamptz(3)
+  rejectionNote  String?
+  serviceArea    String?
+  averageRating  Decimal            @default(0) @db.Decimal(3, 2)
+  ratingCount    Int                @default(0)
+  completedCount Int                @default(0)
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[] @relation("BookingProfessional")
+
+  @@map("professional_profiles")
+}
+
+model ServiceCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  slug        String   @unique
+  name        String
+  description String?
+  iconUrl     String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  services Service[]
+
+  @@index([isActive, sortOrder])
+  @@map("service_categories")
+}
+
+model Service {
+  id             String   @id @default(uuid()) @db.Uuid
+  ownerId        String   @db.Uuid
+  categoryId     String   @db.Uuid
+  title          String
+  slug           String   @unique
+  summary        String?
+  description    String
+  basePrice      Decimal  @db.Decimal(10, 2)
+  currency       String   @default("INR") @db.Char(3)
+  durationMinutes Int     @default(60)
+  isActive       Boolean  @default(true)
+  averageRating  Decimal  @default(0) @db.Decimal(3, 2)
+  ratingCount    Int      @default(0)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  owner    User            @relation("ServiceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  category ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  bookings Booking[]
+  reviews  Review[]
+
+  @@index([categoryId, isActive])
+  @@index([ownerId, isActive])
+  @@map("services")
+}
+
+model Address {
+  id         String      @id @default(uuid()) @db.Uuid
+  userId     String      @db.Uuid
+  label      String
+  type       AddressType @default(HOME)
+  line1      String
+  line2      String?
+  city       String
+  state      String
+  postalCode String
+  latitude   Decimal?    @db.Decimal(9, 6)
+  longitude  Decimal?    @db.Decimal(9, 6)
+  isDefault  Boolean     @default(false)
+  createdAt  DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime    @updatedAt @db.Timestamptz(3)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+model Booking {
+  id                String        @id @default(uuid()) @db.Uuid
+  reference         String        @unique
+  customerId        String        @db.Uuid
+  professionalId    String        @db.Uuid
+  serviceId         String        @db.Uuid
+  addressId         String?       @db.Uuid
+  status            BookingStatus @default(REQUESTED)
+  scheduledStart    DateTime      @db.Timestamptz(3)
+  scheduledEnd      DateTime      @db.Timestamptz(3)
+  priceAmount       Decimal       @db.Decimal(10, 2)
+  currency          String        @default("INR") @db.Char(3)
+  customerNote      String?
+  cancellationNote  String?
+  cancelledAt       DateTime?     @db.Timestamptz(3)
+  completedAt       DateTime?     @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+
+  customer     User                @relation("BookingCustomer", fields: [customerId], references: [id], onDelete: Restrict)
+  professional ProfessionalProfile @relation("BookingProfessional", fields: [professionalId], references: [id], onDelete: Restrict)
+  service      Service             @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  address      Address?            @relation(fields: [addressId], references: [id], onDelete: SetNull)
+  payment      Payment?
+  review       Review?
+
+  // A professional cannot hold two live bookings for the same slot.
+  @@unique([professionalId, scheduledStart], map: "bookings_professional_slot_key")
+  @@index([customerId, status])
+  @@index([professionalId, status])
+  @@index([serviceId])
+  @@index([status, scheduledStart])
+  @@map("bookings")
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  bookingId         String        @unique @db.Uuid
+  amount            Decimal       @db.Decimal(10, 2)
+  currency          String        @default("INR") @db.Char(3)
+  method            PaymentMethod @default(ONLINE)
+  status            PaymentStatus @default(PENDING)
+  provider          String?
+  providerReference String?
+  failureReason     String?
+  paidAt            DateTime?     @db.Timestamptz(3)
+  refundedAt        DateTime?     @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+model Review {
+  id            String       @id @default(uuid()) @db.Uuid
+  bookingId     String       @unique @db.Uuid
+  serviceId     String       @db.Uuid
+  customerId    String       @db.Uuid
+  rating        Int
+  comment       String?
+  status        ReviewStatus @default(PENDING)
+  moderatedBy   String?      @db.Uuid
+  moderatedAt   DateTime?    @db.Timestamptz(3)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt @db.Timestamptz(3)
+
+  booking  Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  service  Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  customer User    @relation("ReviewAuthor", fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, status])
+  @@map("reviews")
+}

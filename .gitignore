@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+dist-android/
+dist-ios/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Expo
+.expo/
+.expo-shared/
+web-build/
+expo-env.d.ts
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+ios/
+android/
+
+# NestJS
+coverage/
+.nestjs/
+
+# Environment
+# Every real environment file is ignored; only the documented template is kept.
+.env
+.env.*
+!.env.example
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+prisma/generated/
+
+# Local database tooling
+*.sqlite
+*.sqlite3
+.pgpass
+pgpass
+
+# Testing
+coverage-final.json
+test-results/
+playwright-report/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
