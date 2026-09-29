@@ -1,5 +1,6 @@
 import { createApi, type HelpzyApi } from '@helpzy/api-client';
 
+import { readAuthSession } from './auth-session';
 import { appConfig } from './config';
 
 /**
@@ -13,6 +14,7 @@ export const api: HelpzyApi = createApi({
   baseUrl: appConfig.apiBaseUrl,
   timeoutMs: appConfig.apiTimeoutMs,
   globalPrefix: appConfig.apiGlobalPrefix,
+  getAuthToken: () => readAuthSession()?.token,
 });
 
 export { ApiError } from '@helpzy/api-client';

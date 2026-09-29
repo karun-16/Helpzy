@@ -42,6 +42,11 @@ export const envSchema = z.object({
     .optional()
     .describe('PostgreSQL connection string. Required from PHASE 2 (Prisma) onwards.'),
 
+  AUTH_JWT_SECRET: z.string().default('helpzy-dev-secret-change-me'),
+  AUTH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).default(86_400),
+  OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
+  MFA_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
+
   TZ: z.string().default('Asia/Kolkata'),
 });
 
@@ -56,6 +61,10 @@ export interface AppConfig {
   globalPrefix: string;
   corsOrigins: string[];
   databaseUrl: string | undefined;
+  authJwtSecret: string;
+  authTokenTtlSeconds: number;
+  otpTtlSeconds: number;
+  mfaTtlSeconds: number;
   timezone: string;
 }
 
@@ -69,6 +78,10 @@ export function toAppConfig(env: Env): AppConfig {
     globalPrefix: env.API_GLOBAL_PREFIX,
     corsOrigins: parseCsv(env.API_CORS_ORIGINS),
     databaseUrl: env.DATABASE_URL,
+    authJwtSecret: env.AUTH_JWT_SECRET,
+    authTokenTtlSeconds: env.AUTH_TOKEN_TTL_SECONDS,
+    otpTtlSeconds: env.OTP_TTL_SECONDS,
+    mfaTtlSeconds: env.MFA_TTL_SECONDS,
     timezone: env.TZ,
   };
 }

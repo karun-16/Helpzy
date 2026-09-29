@@ -1,12 +1,21 @@
 import { createApiClient, HelpzyApiClient } from './client';
+import { createAuthApi, type AuthApi } from './endpoints/auth';
+import {
+  createCustomerDiscoveryApi,
+  type CustomerDiscoveryApi,
+} from './endpoints/customer-discovery';
 import { createHealthApi, type HealthApi } from './endpoints/health';
 
 export * from './client';
 export * from './errors';
+export * from './endpoints/auth';
+export * from './endpoints/customer-discovery';
 export * from './endpoints/health';
 
 export interface HelpzyApi {
   client: HelpzyApiClient;
+  auth: AuthApi;
+  customerDiscovery: CustomerDiscoveryApi;
   health: HealthApi;
 }
 
@@ -17,6 +26,8 @@ export function createApi(
   const client = createApiClient(options);
   return {
     client,
+    auth: createAuthApi(client),
+    customerDiscovery: createCustomerDiscoveryApi(client),
     health: createHealthApi(client),
   };
 }

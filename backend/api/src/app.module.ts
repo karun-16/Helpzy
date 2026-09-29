@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
+import { AuthModule } from './auth/auth.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 import { ConfigModule } from './config/config.module';
+import { CustomerDiscoveryModule } from './customer-discovery/customer-discovery.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 
@@ -19,7 +21,7 @@ import { HealthModule } from './health/health.module';
  * could not be traced in the logs.
  */
 @Module({
-  imports: [ConfigModule, DatabaseModule, HealthModule],
+  imports: [ConfigModule, DatabaseModule, HealthModule, AuthModule, CustomerDiscoveryModule],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_INTERCEPTOR, useClass: ApiResponseInterceptor },
