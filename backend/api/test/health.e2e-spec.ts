@@ -39,8 +39,8 @@ describe('Health (e2e)', () => {
     await app.close();
   });
 
-  it('GET /health returns 200 with the shared success envelope', async () => {
-    const response = await request(app.getHttpServer()).get('/health').expect(200);
+  it('GET /api/v1/health returns 200 with the shared success envelope', async () => {
+    const response = await request(app.getHttpServer()).get('/api/v1/health').expect(200);
 
     expect(response.body).toEqual(
       expect.objectContaining({
@@ -69,7 +69,7 @@ describe('Health (e2e)', () => {
   it('reports the database as DOWN while still answering 200 when the probe fails', async () => {
     databaseProbe.mockRejectedValueOnce(new Error('connection refused'));
 
-    const response = await request(app.getHttpServer()).get('/health').expect(200);
+    const response = await request(app.getHttpServer()).get('/api/v1/health').expect(200);
 
     expect(response.body.data.status).toBe('DOWN');
     expect(response.body.data.checks).toEqual([
@@ -80,7 +80,7 @@ describe('Health (e2e)', () => {
 
   it('echoes an inbound x-request-id', async () => {
     const response = await request(app.getHttpServer())
-      .get('/health')
+      .get('/api/v1/health')
       .set('x-request-id', 'phase-1-test')
       .expect(200);
 
@@ -88,8 +88,9 @@ describe('Health (e2e)', () => {
     expect(response.body.meta.requestId).toBe('phase-1-test');
   });
 
-  it('keeps /health outside the versioned API prefix', async () => {
-    await request(app.getHttpServer()).get('/api/v1/health').expect(404);
+  it('serves health only under the versioned API prefix', async () => {
+    await request(app.getHttpServer()).get('/api/v1/health').expect(200);
+    await request(app.getHttpServer()).get('/health').expect(404);
   });
 
   it('returns a typed error envelope for unknown routes and hides internals', async () => {
@@ -133,7 +134,9 @@ describe('Health (e2e)', () => {
     });
 
     try {
-      const response: Response = await request(app.getHttpServer()).get('/health').expect(500);
+      const response: Response = await request(app.getHttpServer())
+        .get('/api/v1/health')
+        .expect(500);
 
       expect(response.body.error).toEqual(
         expect.objectContaining({ code: 'INTERNAL_SERVER_ERROR', requestId: expect.any(String) }),
@@ -161,13 +164,13 @@ describe('Health (e2e)', () => {
       .set('Access-Control-Request-Method', 'GET')
       .expect(204);
     await request(app.getHttpServer())
-      .options('/health')
+      .options('/api/v1/health')
       .set('Origin', allowed)
       .set('Access-Control-Request-Method', 'GET')
       .expect(204);
 
     const rejected = await request(app.getHttpServer())
-      .get('/health')
+      .get('/api/v1/health')
       .set('Origin', 'http://evil.example')
       .expect(200);
     expect(rejected.headers['access-control-allow-origin']).toBeUndefined();
@@ -184,7 +187,7 @@ describe('Health (e2e)', () => {
       'origin-agent-cluster',
     ] as const;
 
-    for (const path of ['/health', '/api/v1/does-not-exist', '/does-not-exist']) {
+    for (const path of ['/api/v1/health', '/api/v1/does-not-exist', '/does-not-exist']) {
       const response = await request(app.getHttpServer()).get(path);
 
       for (const header of required) {
@@ -202,7 +205,7 @@ describe('Health (e2e)', () => {
     const allowed = 'http://localhost:8081';
 
     const response = await request(app.getHttpServer())
-      .get('/health')
+      .get('/api/v1/health')
       .set('Origin', allowed)
       .expect(200);
 

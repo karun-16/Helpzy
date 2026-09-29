@@ -81,7 +81,7 @@ sequenceDiagram
 
   S->>C: api.health.check()
   C->>C: build URL, JSON, timeout, AbortSignal
-  C->>E: GET /health
+  C->>E: GET /api/v1/health
   E->>E: assign/reuse x-request-id
   E->>N: route match
   N-->>I: controller return value
@@ -99,9 +99,9 @@ Consequences that the codebase depends on:
 - The exception filter forwards a message only when the exception carries an
   explicit `code` - i.e. it was raised by our code. The router's own
   `Cannot GET /x` becomes `The requested resource was not found.`
-- Health is served from `/health` and excluded from the global prefix. The
-  shared client asks for it through `getUnversioned`, so a future `/api/v2`
-  cannot break uptime probes.
+- Health is served under the configured global prefix, like every other API
+  route. Clients use the shared configured prefix rather than a second root
+  endpoint.
 
 ## 5. Middleware order
 
@@ -113,7 +113,7 @@ assembled, and its order is load-bearing:
 2. `helmet` - security headers, after the id so nothing is logged untraced and
    before CORS so CORS headers are written last and are never removed by a
    header policy.
-3. `app.setGlobalPrefix(...)` - operational routes excluded.
+3. `app.setGlobalPrefix(...)` - applied to every API route.
 4. `app.enableCors(...)` - explicit allow-list from `API_CORS_ORIGINS`.
 
 Helmet's defaults apply except `contentSecurityPolicy`, which is off because
@@ -142,7 +142,7 @@ flowchart LR
   SVC["Services / controllers"] --> PS[PrismaService]
   PS --> PC[PrismaClient]
   PC --> PG[(PostgreSQL)]
-  HEALTH["GET /health"] --> Q["SELECT 1"]
+  HEALTH["GET /api/v1/health"] --> Q["SELECT 1"]
   PS --> Q
   CFG["zod-validated DATABASE_URL"] --> PS
 ```
@@ -157,7 +157,7 @@ flowchart LR
 - `PrismaService` is a global module and the only place a connection is opened or
   closed. Startup is fatal in production and degraded-with-logs elsewhere, so a
   missing local database does not stop the app from reporting itself unhealthy.
-- `GET /health` probes the database with `SELECT 1` and reports it as a named
+- `GET /api/v1/health` probes the database with `SELECT 1` and reports it as a named
   check. The probe never throws: an unavailable database is a 200 with
   `status: DOWN`.
 

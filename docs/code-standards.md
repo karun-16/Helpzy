@@ -31,9 +31,8 @@ explains the _intent_ behind the mechanical rules.
 
 - Feature modules live in `backend/api/src/<feature>/` and are registered in
   `app.module.ts` only. Never register a feature in a feature module.
-- Product routes are served under `API_GLOBAL_PREFIX` (`api/v1`). Operational
-  routes (`GET /health`) are added to the exclude list in `bootstrap.ts` and are
-  reached with the client's unversioned methods.
+- All API routes, including health, are served under `API_GLOBAL_PREFIX`
+  (`api/v1`). Do not add duplicate root-level routes.
 - Validate input at the edge with a Zod schema; the service receives a typed
   object and re-validates only what it must trust.
 - Throw `HttpException` subclasses with an explicit `code` when the client

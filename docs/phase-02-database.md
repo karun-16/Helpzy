@@ -16,7 +16,7 @@ Delivered on 2026-09-28. Final hardening pass on 2026-09-29. Phase 1 report:
 | `prisma migrate reset`      | PASS    | `Database reset successful`, then re-seeded                     |
 | Migration state             | PASS    | `migrate status` - `Database schema is up to date!`             |
 | Idempotent seed             | PASS    | Three consecutive runs, identical counts every time             |
-| Database health check       | PASS    | `GET /health` reports `process: UP`, `database: UP`             |
+| Database health check       | PASS    | `GET /api/v1/health` reports `process: UP`, `database: UP`      |
 | CORS allow-list             | PASS    | Explicit list, no wildcard, no origin reflection                |
 | Security headers            | PASS    | Helmet 8.3.0 headers observed on real HTTP responses            |
 | 404 + request id            | PASS    | 5 unknown paths, 12/12 HTTP checks, ids echoed into the log     |
@@ -128,7 +128,7 @@ the code so it cannot be mistaken for finished auth work.
 
 ## Database health check
 
-`GET /health` probes the database with `SELECT 1` and reports it as a named
+`GET /api/v1/health` probes the database with `SELECT 1` and reports it as a named
 check, so a probe failure says which dependency is down:
 
 ```json
@@ -182,7 +182,7 @@ server, tests and production all get identical headers. It runs after the
 request-id middleware (so nothing is logged untraced) and before CORS (so CORS
 headers are added last and are never stripped by a header policy).
 
-Headers observed on a live `GET /health`:
+Headers observed on a live `GET /api/v1/health`:
 
 ```
 Strict-Transport-Security: max-age=31536000; includeSubDomains

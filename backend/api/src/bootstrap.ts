@@ -1,14 +1,8 @@
-import { RequestMethod, type INestApplication } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
 import helmet from 'helmet';
-import { OPERATIONAL_ROUTES } from '@helpzy/config';
 
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
 import type { AppConfig } from './config/env';
-
-export const HEALTH_EXCLUDE = {
-  path: OPERATIONAL_ROUTES.health,
-  method: RequestMethod.GET,
-} as const;
 
 /**
  * Applies the HTTP contract shared by every entry point (dev server, tests and
@@ -34,9 +28,8 @@ export function configureApp(app: INestApplication, config: AppConfig): INestApp
     }),
   );
 
-  // Operational routes stay outside the versioned prefix so their path is
-  // stable; every product route is served under `API_GLOBAL_PREFIX`.
-  app.setGlobalPrefix(config.globalPrefix, { exclude: [HEALTH_EXCLUDE] });
+  // Every API route, including health, is served under `API_GLOBAL_PREFIX`.
+  app.setGlobalPrefix(config.globalPrefix);
 
   app.enableCors({
     // An explicit allow-list only. `API_CORS_ORIGINS` cannot contain a wildcard

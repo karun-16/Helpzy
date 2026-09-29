@@ -93,11 +93,7 @@ export class HelpzyApiClient {
     return this.execute<T>(path, this.globalPrefix, options);
   }
 
-  /**
-   * Requests a path that lives outside the versioned prefix (see
-   * `OPERATIONAL_ROUTES`). Used for operational endpoints such as `/health`,
-   * whose path is stable across API versions.
-   */
+  /** Requests a path that intentionally lives outside the configured prefix. */
   async requestUnversioned<T>(path: string, options: RequestOptions<T> = {}): Promise<T> {
     return this.execute<T>(path, '', options);
   }

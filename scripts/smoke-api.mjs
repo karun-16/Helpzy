@@ -28,32 +28,36 @@ const record = (name, ok, detail) => {
 
 const { client, health } = createApi({ env });
 
-// 1. The unversioned health route returns a payload the shared schema accepts.
+// 1. The versioned health route returns a payload the shared schema accepts.
 try {
   const raw = await health.check();
   const parsed = healthResponseSchema.safeParse(raw);
   record(
-    'GET /health responds',
+    'GET /api/v1/health responds',
     true,
     `${raw.service} ${raw.status} in ${raw.checks[0]?.latencyMs ?? '?'} ms`,
   );
   record(
-    'GET /health matches the shared schema',
+    'GET /api/v1/health matches the shared schema',
     parsed.success,
     parsed.success ? `environment ${raw.environment}` : parsed.error.message,
   );
 } catch (error) {
-  record('GET /health responds', false, error instanceof ApiError ? error.message : String(error));
+  record(
+    'GET /api/v1/health responds',
+    false,
+    error instanceof ApiError ? error.message : String(error),
+  );
 }
 
-// 2. Unversioned requests do not pick up the api/v1 prefix.
+// 2. Health has one canonical route and is not duplicated at the root.
 try {
-  await client.requestUnversioned('/definitely-not-a-route');
-  record('unversioned request skips the api/v1 prefix', false, 'request unexpectedly succeeded');
+  await client.requestUnversioned('/health');
+  record('root /health is not duplicated', false, 'request unexpectedly succeeded');
 } catch (error) {
   const ok = error instanceof ApiError && error.status === 404 && error.code === 'NOT_FOUND';
   record(
-    'unversioned request skips the api/v1 prefix',
+    'root /health is not duplicated',
     ok,
     ok ? `requestId ${error.requestId ?? 'n/a'}` : String(error),
   );

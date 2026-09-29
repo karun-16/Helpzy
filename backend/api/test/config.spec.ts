@@ -1,10 +1,10 @@
-import { OPERATIONAL_ROUTES, resolveApiBaseUrl, resolveApiGlobalPrefix } from '@helpzy/config';
+import { API_ROUTES, resolveApiBaseUrl, resolveApiGlobalPrefix } from '@helpzy/config';
 
 import { envSchema, toAppConfig } from '../src/config/env';
 
 describe('configuration', () => {
-  it('serves the health check from the unversioned root path', () => {
-    expect(OPERATIONAL_ROUTES.health).toBe('/health');
+  it('serves health under the configured versioned API prefix', () => {
+    expect(`${resolveApiGlobalPrefix({})}${API_ROUTES.health}`).toBe('api/v1/health');
   });
 
   it('falls back to sensible defaults when nothing is configured', () => {

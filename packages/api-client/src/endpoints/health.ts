@@ -1,4 +1,4 @@
-import { OPERATIONAL_ROUTES } from '@helpzy/config';
+import { API_ROUTES } from '@helpzy/config';
 import { healthResponseSchema, type HealthResponseDto } from '@helpzy/validation';
 
 import type { HelpzyApiClient } from '../client';
@@ -7,7 +7,7 @@ import type { HelpzyApiClient } from '../client';
 export function createHealthApi(client: HelpzyApiClient) {
   return {
     check: (signal?: AbortSignal) =>
-      client.getUnversioned<HealthResponseDto>(OPERATIONAL_ROUTES.health, {
+      client.get<HealthResponseDto>(API_ROUTES.health, {
         schema: healthResponseSchema,
         signal,
       }),

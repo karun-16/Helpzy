@@ -44,7 +44,7 @@ pnpm --filter @helpzy/api run db:migrate   # apply the schema
 pnpm --filter @helpzy/api run db:seed      # development fixtures, safe to re-run
 ```
 
-`GET /health` reports `process: UP` and `database: UP` once this is done. See
+`GET /api/v1/health` reports `process: UP` and `database: UP` once this is done. See
 [`docs/phase-02-database.md`](docs/phase-02-database.md) for the schema, the
 migration and the seed accounts.
 
@@ -118,9 +118,8 @@ flowchart LR
   Android and iOS read the same values.
 - **One source of truth for the API contract.** `packages/validation` validates
   payloads on both sides; `packages/types` types every envelope.
-- **Operational routes are not versioned.** `GET /health` stays at the root so
-  uptime probes and load balancers keep working when product routes move to
-  `/api/v1`.
+- **API routes share one versioned prefix.** Health is served at
+  `GET /api/v1/health`; no duplicate root-level health route is exposed.
 - **One database client.** Prisma owns the schema and migrations; the API talks
   to it only through `PrismaService`, which is the only place a connection is
   opened or closed.

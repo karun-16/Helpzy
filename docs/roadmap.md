@@ -15,7 +15,7 @@ Report: [`phase-01-foundation.md`](phase-01-foundation.md).
 - Prisma schema for `User`, `ProfessionalProfile`, `ServiceCategory`, `Service`,
   `Booking`, `Payment`, `Review`, `Address`, plus the enums the domain needs.
 - First migration plus an idempotent seed script with development fixtures.
-- A `PrismaService` in the API with health impact wired into `GET /health`.
+- A `PrismaService` in the API with health impact wired into `GET /api/v1/health`.
 
 Report: [`phase-02-database.md`](phase-02-database.md).
 

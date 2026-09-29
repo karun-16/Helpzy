@@ -66,7 +66,7 @@ export class HealthService {
         latencyMs: elapsedMs(startedAt),
       };
     } catch (error) {
-      // The message is for operators reading `/health`; it never contains
+      // The message is for operators reading `/api/v1/health`; it never contains
       // credentials because the client is configured with a redacted URL.
       return {
         name: CHECK_DATABASE,

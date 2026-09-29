@@ -26,7 +26,7 @@ export const envSchema = z.object({
   API_GLOBAL_PREFIX: z
     .string()
     .default('api/v1')
-    .describe('Prefix applied to product routes, e.g. api/v1. Operational routes stay unprefixed.'),
+    .describe('Prefix applied to all API routes, e.g. api/v1.'),
 
   API_CORS_ORIGINS: z
     .string()

@@ -57,10 +57,10 @@ Tailwind 3.4.
 
 `backend/api`, NestJS 11 on Node, CommonJS.
 
-- `GET /health` returns 200 with the shared success envelope:
+- `GET /api/v1/health` returns 200 with the shared success envelope:
   `{ success, data: { status, service, version, environment, uptimeSeconds, timestamp, checks }, meta: { requestId, timestamp } }`.
-- Health is served unversioned at the root and excluded from `API_GLOBAL_PREFIX`
-  (`api/v1`), so uptime probes keep working across API versions.
+- Health is served under `API_GLOBAL_PREFIX` (`api/v1`), like all other API
+  routes.
 - Cross-cutting HTTP contract, applied in one function (`configureApp`) shared by
   the dev server and the tests: CORS, request ids, success envelope, global
   exception filter.
@@ -182,6 +182,6 @@ Three defects in the code itself were found by that verification and fixed:
 ## Next step
 
 PHASE 2 - Database: start PostgreSQL, add Prisma, write the schema, migrate,
-seed, and surface database connectivity in `GET /health`. The first task should
+seed, and surface database connectivity in `GET /api/v1/health`. The first task should
 be opening the app on a real Android device, since that is the one PHASE 1
 promise that could not be verified here.

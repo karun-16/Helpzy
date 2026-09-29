@@ -33,7 +33,7 @@ pnpm --filter @helpzy/api run db:reset      # drops, re-applies, re-seeds
 ### Security headers and CORS
 
 `backend/api/test/health.e2e-spec.ts` asserts, over real HTTP, that Helmet's
-headers are present on `/health`, on a versioned 404 and on an unversioned 404,
+headers are present on `/api/v1/health`, on a versioned 404 and on an unversioned 404,
 and that CORS still works alongside them. The wildcard rule is a unit test
 because it is a start-up failure, not an HTTP response:
 
@@ -43,20 +43,20 @@ pnpm test:api     # includes the API_CORS_ORIGINS wildcard rejection tests
 
 ## What each existing test protects
 
-`backend/api/test/config.spec.ts` - the health route is the unversioned root
-path; defaults apply when nothing is configured; trailing slashes are
+`backend/api/test/config.spec.ts` - the health route is under the configured
+versioned prefix; defaults apply when nothing is configured; trailing slashes are
 normalised; and `API_CORS_ORIGINS` is parsed into an explicit list, trimmed, and
 refuses a wildcard or the literal `null`.
 
 `backend/api/test/health.e2e-spec.ts` - the full HTTP contract:
 
-- `GET /health` returns 200 with the shared success envelope and a request id.
+- `GET /api/v1/health` returns 200 with the shared success envelope and a request id.
 - Both named checks - `process` and `database` - are present and `UP`. The
   database probe is stubbed, so this suite needs no PostgreSQL.
-- When the database probe fails, `/health` still answers 200 and reports
+- When the database probe fails, `/api/v1/health` still answers 200 and reports
   `status: DOWN` with the `database` check down. Availability beats readiness.
 - An inbound `x-request-id` is echoed in both the header and `meta`.
-- `/api/v1/health` is 404, proving the exclusion works.
+- Root `/health` is 404, proving health is not duplicated outside the prefix.
 - Unknown routes, inside and outside the versioned prefix, return the typed
   error envelope, echo the request id, and never echo the router's
   `Cannot GET /x` message.
@@ -69,8 +69,8 @@ refuses a wildcard or the literal `null`.
 `scripts/smoke-api.mjs` - what the app actually does at runtime, against a live
 process:
 
-- `GET /health` responds and matches the shared Zod schema.
-- Unversioned requests skip the `api/v1` prefix.
+- `GET /api/v1/health` responds and matches the shared Zod schema.
+- Root `/health` remains unavailable; the canonical versioned route is used.
 - Versioned requests get the typed error envelope.
 - An unreachable API surfaces `ApiError` instead of hanging.
 

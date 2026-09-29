@@ -11,7 +11,7 @@ import { APP_CONFIG, type AppConfigRef } from '../config/app-config.token';
  *  - production: a failed connection is fatal. A process that cannot reach its
  *    database must not accept traffic.
  *  - development / test: the process starts anyway and logs the failure, so a
- *    missing local database does not block the rest of the work. `GET /health`
+ *    missing local database does not block the rest of the work. `GET /api/v1/health`
  *    then reports the database as DOWN, which is the signal to act on.
  *
  * The connection is opened once on module init and closed on shutdown, so
