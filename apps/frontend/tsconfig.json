@@ -10,13 +10,6 @@
       "@helpzy/validation": ["../../packages/validation/src/index.ts"]
     }
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "app.config.ts",
-    "nativewind-env.d.ts",
-    "expo-env.d.ts",
-    ".expo/types/**/*.ts"
-  ],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "app.config.ts", "nativewind-env.d.ts"],
   "exclude": ["node_modules", "dist", "dist-android", "dist-ios"]
 }
