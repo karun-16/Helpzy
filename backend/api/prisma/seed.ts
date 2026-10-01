@@ -8,11 +8,13 @@
  *  - Every lookup is by a natural key (email, slug, reference) so re-running
  *    updates rather than duplicating.
  *
- * Passwords are all `Helpzy@123` (documented in docs/testing.md); the hashing
- * helper is a plain SHA-256 stand-in that the auth phase replaces with argon2.
  */
 import { Prisma, PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
+
+if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
+  throw new Error('Database seeding is restricted to development and test environments.');
+}
 
 const prisma = new PrismaClient();
 
@@ -140,11 +142,28 @@ async function seedUsers(): Promise<void> {
       passwordHash: hash(SEED_PASSWORD),
     };
 
-    const user = await prisma.user.upsert({
-      where: { email: entry.email },
-      update: data,
-      create: { email: entry.email, ...data },
+    /*
+     * Resolved by phone *or* email, not by email alone.
+     *
+     * Phone is the login identity and is unique, but a device that signed up
+     * through the app can already own a seeded phone with no email. Looking up
+     * by email only would then try to *create* the phone and fail the unique
+     * constraint, so the seed aborted part-way through. Matching either natural
+     * key keeps the seed idempotent on a database that has been used.
+     */
+    const existing = await prisma.user.findFirst({
+      where: { OR: [{ email: entry.email }, { phone: entry.phone }] },
+      select: { id: true },
     });
+
+    const user = existing
+      ? await prisma.user.update({
+          where: { id: existing.id },
+          data: { ...data, email: entry.email },
+        })
+      : await prisma.user.create({
+          data: { email: entry.email, ...data },
+        });
 
     if (entry.role !== 'PROFESSIONAL') continue;
 
@@ -292,7 +311,7 @@ async function main(): Promise<void> {
     `Seed complete: ${users} users, ${professionals} professionals, ${categories} categories, ` +
       `${services} services, ${bookings} bookings, ${payments} payments.`,
   );
-  console.log(`All seeded accounts use the password ${SEED_PASSWORD}.`);
+  console.log('Seeded demo accounts are available for local testing.');
 }
 
 main()

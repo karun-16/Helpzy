@@ -40,6 +40,13 @@ prisma/*.db
 prisma/*.db-journal
 prisma/generated/
 
+# Local media storage
+# Runtime upload directory for the local development media provider
+# (MEDIA_UPLOAD_DIR). These are user-supplied files, not source, so they are
+# never committed. A production media provider writes to its own store instead.
+backend/api/uploads/
+uploads/
+
 # Local database tooling
 *.sqlite
 *.sqlite3

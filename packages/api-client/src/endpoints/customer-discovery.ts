@@ -1,8 +1,8 @@
 import {
-  customerProfessionalProfileSchema,
   customerAvailableProfessionalsSchema,
   customerServiceCategoriesSchema,
   customerServiceProfessionalsSchema,
+  professionalMarketplaceProfileSchema,
   type CustomerServiceCategoriesDto,
   type CustomerServiceProfessionalsDto,
 } from '@helpzy/validation';
@@ -28,7 +28,7 @@ export function createCustomerDiscoveryApi(client: HelpzyApiClient) {
       }),
     getProfessionalProfile: (professionalId: string, signal?: AbortSignal) =>
       client.get(`customer/professionals/${encodeURIComponent(professionalId)}`, {
-        schema: customerProfessionalProfileSchema,
+        schema: professionalMarketplaceProfileSchema,
         signal,
       }),
   };

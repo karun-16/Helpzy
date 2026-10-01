@@ -78,6 +78,35 @@ enum AddressType {
   OTHER
 }
 
+enum NotificationType {
+  BOOKING_REQUESTED
+  BOOKING_ACCEPTED
+  BOOKING_REJECTED
+  BOOKING_SCHEDULED
+  BOOKING_ON_THE_WAY
+  BOOKING_IN_PROGRESS
+  BOOKING_COMPLETED
+  BOOKING_CONFIRMED
+  PAYMENT_PENDING
+  PAYMENT_PAID
+  PAYMENT_FAILED
+  BOOKING_CANCELLED
+  REVIEW_RECEIVED
+  VERIFICATION_DECISION
+  SYSTEM
+}
+
+enum AuditEntityType {
+  USER
+  PROFESSIONAL_PROFILE
+  SERVICE
+  SERVICE_CATEGORY
+  BOOKING
+  PAYMENT
+  REVIEW
+  NOTIFICATION
+}
+
 model User {
   id           String     @id @default(uuid()) @db.Uuid
   email        String?    @unique
@@ -94,11 +123,39 @@ model User {
   professionalProfile ProfessionalProfile?
   addresses           Address[]
   bookingsAsCustomer  Booking[]        @relation("BookingCustomer")
+  bookingStatusChanges BookingStatusHistory[] @relation("BookingStatusActor")
   services            Service[]        @relation("ServiceOwner")
   reviewsWritten      Review[]         @relation("ReviewAuthor")
+  notifications       Notification[]
+  auditLogs           AuditLog[]       @relation("AuditActor")
+  sentMessages        BookingMessage[] @relation("MessageSender")
+  uploadedMedia       MediaAsset[]     @relation("MediaOwner")
 
   @@index([role, status])
   @@map("users")
+}
+
+/// An uploaded file (currently profile photos) owned by a user.
+///
+/// The bytes live behind a `MediaStorageProvider`; this row records only the
+/// provider key and the public URL that key resolves to.
+model MediaAsset {
+  id           String   @id @default(uuid()) @db.Uuid
+  ownerUserId  String   @db.Uuid
+  kind         String
+  provider     String
+  storageKey   String
+  publicUrl    String
+  contentType  String
+  byteSize     Int
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  owner User @relation("MediaOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, kind], map: "media_assets_owner_kind_key")
+  @@index([ownerUserId])
+  @@map("media_assets")
 }
 
 model CustomerProfile {
@@ -126,8 +183,26 @@ model ProfessionalProfile {
   averageRating  Decimal            @default(0) @db.Decimal(3, 2)
   ratingCount    Int                @default(0)
   completedCount Int                @default(0)
-  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
+
+  // Marketplace profile details the professional owns. All nullable so an
+  // existing profile renders an honest empty state instead of invented data.
+  yearsOfExperience Int?
+  contactEmail      String?
+  /// Phone is the login identity and is never copied here; the professional
+  /// only controls whether customers may see it.
+  isPhoneVisible    Boolean           @default(false)
+  /// `[{ "day": 1, "start": "09:00", "end": "18:00" }]` with `day` 0=Sun..6=Sat.
+  workingHours      Json?
+
+  /// Last position reported by the professional's own device while location
+  /// sharing is on. Never populated without an explicit device update.
+  isLocationSharingEnabled Boolean   @default(false)
+  lastKnownLatitude        Decimal? @db.Decimal(9, 6)
+  lastKnownLongitude       Decimal? @db.Decimal(9, 6)
+  locationUpdatedAt        DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   bookings Booking[] @relation("BookingProfessional")
@@ -227,6 +302,9 @@ model Booking {
   address      Address?            @relation(fields: [addressId], references: [id], onDelete: SetNull)
   payment      Payment?
   review       Review?
+  statusHistory BookingStatusHistory[]
+  messages     BookingMessage[]
+  notifications Notification[]
 
   // A professional cannot hold two live bookings for the same slot.
   @@unique([professionalId, scheduledStart], map: "bookings_professional_slot_key")
@@ -235,6 +313,21 @@ model Booking {
   @@index([serviceId])
   @@index([status, scheduledStart])
   @@map("bookings")
+}
+
+model BookingStatusHistory {
+  id          String        @id @default(uuid()) @db.Uuid
+  bookingId   String        @db.Uuid
+  fromStatus  BookingStatus?
+  toStatus    BookingStatus
+  actorUserId String        @db.Uuid
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  actor   User    @relation("BookingStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId, createdAt])
+  @@map("booking_status_history")
 }
 
 model Payment {
@@ -254,8 +347,30 @@ model Payment {
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  /// Provider attempts, newest last. Keeps the audit trail for a payment that
+  /// was retried without overwriting the previous provider reference.
+  attempts PaymentAttempt[]
+
   @@index([status, createdAt])
   @@map("payments")
+}
+
+/// One record per interaction with a payment provider (or with the manual
+/// direct-payment path). Append-only.
+model PaymentAttempt {
+  id          String        @id @default(uuid()) @db.Uuid
+  paymentId   String        @db.Uuid
+  method      PaymentMethod
+  status      PaymentStatus
+  provider    String?
+  reference   String?
+  note        String?
+  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@map("payment_attempts")
 }
 
 model Review {
@@ -276,5 +391,69 @@ model Review {
   customer User    @relation("ReviewAuthor", fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([serviceId, status])
+  @@index([status, createdAt])
   @@map("reviews")
+}
+
+/// A message inside the chat that belongs to exactly one booking.
+///
+/// Only the booking's customer and its assigned professional may read or post.
+/// There is deliberately no conversation table: chat cannot exist outside a
+/// booking, so the booking is the conversation.
+model BookingMessage {
+  id           String    @id @default(uuid()) @db.Uuid
+  bookingId    String    @db.Uuid
+  senderUserId String    @db.Uuid
+  body         String
+  readAt       DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  sender  User    @relation("MessageSender", fields: [senderUserId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId, createdAt])
+  @@index([senderUserId, readAt])
+  @@map("booking_messages")
+}
+
+/// An in-app notification produced by a real backend event.
+///
+/// `dedupeKey` makes delivery idempotent: the same booking transition retried
+/// cannot create a second notification.
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  bookingId String?          @db.Uuid
+  /// Set while the recipient has not opened it; cleared on read.
+  readAt    DateTime?        @db.Timestamptz(3)
+  /// Stable identity of the event, e.g. `BOOKING_ACCEPTED:<bookingId>:<userId>`.
+  dedupeKey String?
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([dedupeKey], map: "notifications_dedupe_key_key")
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+/// Append-only record of privileged actions, for the admin audit view.
+model AuditLog {
+  id          String          @id @default(uuid()) @db.Uuid
+  actorUserId String          @db.Uuid
+  action      String
+  entityType  AuditEntityType
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+
+  actor User @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
 }

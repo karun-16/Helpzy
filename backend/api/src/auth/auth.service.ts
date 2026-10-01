@@ -22,6 +22,12 @@ export interface AuthSessionPayload {
   role: Role;
   status: string;
   mfaVerified?: boolean;
+  /**
+   * Carried in the token so the header avatar survives a refresh or a fresh
+   * sign-in without the client having to fetch the profile first. It is a
+   * display value only; every authorisation decision reads the database.
+   */
+  avatarUrl?: string | null;
   iat: number;
   exp: number;
 }
@@ -48,6 +54,7 @@ interface UserRecord {
   role: Role;
   status: string;
   passwordHash: string;
+  avatarUrl?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -320,6 +327,7 @@ export class AuthService {
         fullName: authUser.fullName,
         role: authUser.role,
         status: authUser.status,
+        avatarUrl: authUser.avatarUrl ?? null,
         mfaVerified: true,
       },
       mfaRequired: false,
@@ -372,6 +380,7 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       status: user.status,
+      avatarUrl: user.avatarUrl ?? null,
       mfaVerified: user.role === ROLES.ADMIN,
     };
   }
@@ -401,6 +410,7 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       status: user.status,
+      avatarUrl: user.avatarUrl ?? null,
       mfaVerified: !mfaRequired,
       iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + this.config.authTokenTtlSeconds,
@@ -415,6 +425,7 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role,
         status: user.status,
+        avatarUrl: user.avatarUrl ?? null,
         mfaVerified: !mfaRequired,
       },
       mfaRequired,
@@ -452,6 +463,7 @@ export class AuthService {
           role: row.role,
           status: row.status,
           passwordHash: row.passwordHash,
+          avatarUrl: row.avatarUrl,
         };
       }
     } catch {
@@ -474,6 +486,7 @@ export class AuthService {
           role: row.role,
           status: row.status,
           passwordHash: row.passwordHash,
+          avatarUrl: row.avatarUrl,
         };
       }
     } catch {
@@ -519,5 +532,6 @@ export type AuthSessionUser = {
   fullName: string;
   role: Role;
   status: string;
+  avatarUrl: string | null;
   mfaVerified?: boolean;
 };

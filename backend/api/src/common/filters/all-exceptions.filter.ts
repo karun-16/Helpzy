@@ -27,8 +27,22 @@ const GENERIC_MESSAGES: Record<number, string> = {
   [HttpStatus.FORBIDDEN]: 'You do not have permission to perform this action.',
   [HttpStatus.NOT_FOUND]: 'The requested resource was not found.',
   [HttpStatus.CONFLICT]: 'The request conflicts with the current state of the resource.',
+  [HttpStatus.PAYLOAD_TOO_LARGE]: 'That file is larger than this server accepts.',
   [HttpStatus.TOO_MANY_REQUESTS]: 'Too many requests. Please slow down and try again.',
 };
+
+/**
+ * Body-parser rejects an oversized or malformed request body with a plain
+ * `Error` carrying a `status`/`type`, not an `HttpException`. It is raised
+ * before any controller runs, so without this mapping an ordinary "file too
+ * big" would reach the client as an opaque 500.
+ */
+interface BodyParserError {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+  message?: string;
+}
 
 /**
  * Last line of defence: converts any thrown value into the shared error
@@ -130,10 +144,44 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
+    // Must come before the `HttpException` check below: body-parser errors are
+    // not `HttpException`s, so without this they would be reported as a 500.
+    const bodyParser = exception as BodyParserError;
+    if (typeof bodyParser.type === 'string' && bodyParser.type.startsWith('entity.')) {
+      return this.describeBodyParserError(bodyParser);
+    }
+
     return {
       status: HttpStatus.INTERNAL_SERVER_ERROR,
       code: API_ERROR_CODES.INTERNAL_SERVER_ERROR,
       message: 'Something went wrong on our side. Please try again in a moment.',
+    };
+  }
+
+  /**
+   * Body-parser failures are the caller's fault, not ours, and they say so.
+   * `entity.too.large` becomes a real 413 and `entity.parse.failed` a real 400,
+   * so a client can tell "shrink the file" from "your JSON is malformed".
+   */
+  private describeBodyParserError(exception: BodyParserError): {
+    status: number;
+    code: ApiErrorCode;
+    message: string;
+  } {
+    const status = exception.status ?? exception.statusCode ?? HttpStatus.BAD_REQUEST;
+
+    if (status === HttpStatus.PAYLOAD_TOO_LARGE || exception.type === 'entity.too.large') {
+      return {
+        status: HttpStatus.PAYLOAD_TOO_LARGE,
+        code: API_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        message: GENERIC_MESSAGES[HttpStatus.PAYLOAD_TOO_LARGE]!,
+      };
+    }
+
+    return {
+      status: HttpStatus.BAD_REQUEST,
+      code: API_ERROR_CODES.BAD_REQUEST,
+      message: GENERIC_MESSAGES[HttpStatus.BAD_REQUEST]!,
     };
   }
 }

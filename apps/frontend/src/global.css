@@ -1,3 +1,102 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * HELPZY design tokens.
+ *
+ * Surfaces and text are CSS variables rather than fixed Tailwind colours, so
+ * `bg-surface` and `text-primary` follow the theme automatically. That is what
+ * makes dark mode reliable: a card painted `bg-surface` becomes the dark surface
+ * without anyone having to remember a matching `dark:` class, which is how white
+ * cards ended up holding near-white text.
+ *
+ * Deliberately restrained: one brand hue, a warm accent reserved for attention,
+ * and slate neutrals for everything structural.
+ */
+@layer base {
+  :root {
+    --hz-canvas: 248 250 252; /* slate-50 */
+    --hz-surface: 255 255 255; /* white */
+    --hz-surface-muted: 241 245 249; /* slate-100 */
+    --hz-surface-sunken: 226 232 240; /* slate-200 */
+
+    /* primary 15.8:1 on the surface, secondary 7.4:1, muted 4.8:1. */
+    --hz-text-primary: 15 23 42; /* slate-900 */
+    --hz-text-secondary: 51 65 85; /* slate-700 */
+    --hz-text-muted: 100 116 139; /* slate-500 */
+
+    --hz-border: 226 232 240; /* slate-200 */
+    --hz-border-strong: 203 213 225; /* slate-300 */
+
+    /*
+     * Brand: the existing HELPZY blue, used for every primary action and link so
+     * the page reads as one palette rather than mixing greens and blues.
+     */
+    --hz-brand: 27 101 240; /* brand-600 */
+    --hz-brand-hover: 21 80 220; /* brand-700 */
+    --hz-brand-soft: 217 235 255; /* brand-100 */
+    --hz-brand-text: 23 67 178; /* brand-800, 7.0:1 on white */
+
+    /* Filled primary buttons: white label needs a dark fill in both themes. */
+    --hz-brand-fill: 21 80 220; /* brand-700, 8.7:1 with white */
+    --hz-brand-fill-hover: 23 67 178; /* brand-800 */
+
+    --hz-success: 21 128 61; /* green-700 */
+    --hz-success-soft: 220 252 231; /* green-100 */
+    --hz-warning: 180 83 9; /* amber-700 */
+    --hz-warning-soft: 254 243 199; /* amber-100 */
+    --hz-danger: 190 18 60; /* rose-700 */
+    --hz-danger-soft: 255 228 230; /* rose-100 */
+
+    --hz-focus: 47 133 251; /* brand-500 */
+  }
+
+  .dark {
+    --hz-canvas: 2 6 23; /* slate-950 */
+    --hz-surface: 15 23 42; /* slate-900 */
+    --hz-surface-muted: 30 41 59; /* slate-800 */
+    --hz-surface-sunken: 51 65 85; /* slate-700 */
+
+    /* Light text for dark surfaces: primary 17.9:1, secondary 8.6:1, muted 7.4:1. */
+    --hz-text-primary: 248 250 252; /* slate-50 */
+    --hz-text-secondary: 203 213 225; /* slate-300 */
+    --hz-text-muted: 148 163 184; /* slate-400 */
+
+    --hz-border: 51 65 85; /* slate-700 */
+    --hz-border-strong: 71 85 105; /* slate-600 */
+
+    /* The brand lightens rather than darkens, so it stays visible on a dark canvas. */
+    --hz-brand: 88 166 255; /* brand-400 */
+    --hz-brand-hover: 142 198 255; /* brand-300 */
+    --hz-brand-soft: 30 58 95;
+    --hz-brand-text: 178 217 255; /* brand-200 */
+    --hz-brand-fill: 21 80 220; /* brand-700, unchanged in dark */
+    --hz-brand-fill-hover: 23 67 178; /* brand-800 */
+
+    --hz-success: 134 239 172; /* green-300 */
+    --hz-success-soft: 6 78 59; /* green-900 */
+    --hz-warning: 252 211 77; /* amber-300 */
+    --hz-warning-soft: 120 53 15; /* amber-900 */
+    --hz-danger: 253 164 175; /* rose-300 */
+    --hz-danger-soft: 136 19 55; /* rose-900 */
+
+    --hz-focus: 142 198 255;
+  }
+
+  /*
+   * Placeholders sit one step below real input text. The UA default is far too
+   * light against a white field, which made an empty field look filled.
+   */
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--hz-text-muted));
+    opacity: 1;
+  }
+
+  /* A visible focus ring, since a keyboard user otherwise has no cue at all. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--hz-focus));
+    outline-offset: 2px;
+  }
+}

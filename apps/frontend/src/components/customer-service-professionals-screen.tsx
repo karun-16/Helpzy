@@ -3,11 +3,11 @@ import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-nati
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { CustomerProfessional } from '@helpzy/types';
 
-import { AuthenticatedRoleScreen } from '@/components/authenticated-role-screen';
 import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-header';
 import { ProfessionalCard } from '@/components/professional-card';
 import { api } from '@/lib/api';
-import { clearAuthSession, readAuthSession } from '@/lib/auth-session';
+import { clearAuthSession } from '@/lib/auth-session';
+import { useAuthSession } from '@/lib/hooks';
 
 type ServiceProfessionals = Awaited<
   ReturnType<typeof api.customerDiscovery.getProfessionalsForService>
@@ -41,88 +41,89 @@ export function CustomerServiceProfessionalsScreen() {
     return () => controller.abort();
   }, [requestKey, serviceId]);
 
-  const session = readAuthSession();
+  const session = useAuthSession();
   const logout = () => {
     clearAuthSession();
     router.replace('/');
   };
 
   return (
-    <AuthenticatedRoleScreen role="CUSTOMER">
-      <View className="flex-1 bg-slate-50">
-        <CustomerMarketplaceHeader
-          customerName={session?.user.fullName ?? 'Customer'}
-          onHomePress={() => router.replace('/customer')}
-          onLogout={logout}
-        />
-        <ScrollView contentContainerStyle={{ paddingBottom: 48 }}>
-          <View className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => router.back()}
-              className="mb-5 self-start"
-            >
-              <Text className="text-sm font-semibold text-emerald-800">← Back to services</Text>
-            </Pressable>
-            {loading ? (
-              <View className="min-h-36 flex-row items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white">
-                <ActivityIndicator color="#047857" />
-                <Text className="text-sm text-slate-600">Loading professionals...</Text>
-              </View>
-            ) : error || !currentResult ? (
-              <View className="rounded-xl border border-rose-200 bg-white px-5 py-6">
-                <Text className="text-base font-semibold text-slate-900">
-                  Something went wrong. Try again.
+    <View className="flex-1 bg-slate-50 dark:bg-canvas">
+      <CustomerMarketplaceHeader
+        customerName={session?.user.fullName ?? 'Guest'}
+        onHomePress={() => router.replace(session ? '/customer' : '/')}
+        onLogout={session ? logout : undefined}
+        guest={!session}
+      />
+      <ScrollView contentContainerStyle={{ paddingBottom: 48 }}>
+        <View className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            className="mb-5 self-start"
+          >
+            <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
+              ← Back to services
+            </Text>
+          </Pressable>
+          {loading ? (
+            <View className="min-h-36 flex-row items-center justify-center gap-3 rounded-xl border border-hairline dark:border-hairline-strong bg-surface">
+              <ActivityIndicator color="#047857" />
+              <Text className="text-sm text-secondary">Loading professionals...</Text>
+            </View>
+          ) : error || !currentResult ? (
+            <View className="rounded-xl border border-rose-200 dark:border-rose-900 bg-surface px-5 py-6">
+              <Text className="text-base font-semibold text-primary">
+                Something went wrong. Try again.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setRetry((value) => value + 1)}
+                className="mt-3 self-start"
+              >
+                <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
+                  Retry
                 </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setRetry((value) => value + 1)}
-                  className="mt-3 self-start"
-                >
-                  <Text className="text-sm font-semibold text-emerald-800">Retry</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <>
-                <Text className="text-sm font-semibold text-emerald-800">
-                  {currentResult.service.category.name}
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
+                {currentResult.service.category.name}
+              </Text>
+              <Text className="mt-1 text-3xl font-black text-primary">
+                {currentResult.service.title}
+              </Text>
+              {currentResult.service.summary ? (
+                <Text className="mt-2 max-w-2xl text-base leading-6 text-secondary">
+                  {currentResult.service.summary}
                 </Text>
-                <Text className="mt-1 text-3xl font-black text-slate-900">
-                  {currentResult.service.title}
+              ) : null}
+              <Text className="mt-8 text-xl font-bold text-primary">Available Professionals</Text>
+              {currentResult.professionals.length === 0 ? (
+                <Text className="mt-3 rounded-xl border border-hairline dark:border-hairline-strong bg-surface px-5 py-6 text-sm text-secondary">
+                  No professionals found for this service.
                 </Text>
-                {currentResult.service.summary ? (
-                  <Text className="mt-2 max-w-2xl text-base leading-6 text-slate-600">
-                    {currentResult.service.summary}
-                  </Text>
-                ) : null}
-                <Text className="mt-8 text-xl font-bold text-slate-900">
-                  Available Professionals
-                </Text>
-                {currentResult.professionals.length === 0 ? (
-                  <Text className="mt-3 rounded-xl border border-slate-200 bg-white px-5 py-6 text-sm text-slate-600">
-                    No professionals found for this service.
-                  </Text>
-                ) : (
-                  <View className="mt-4 flex-row flex-wrap gap-3">
-                    {currentResult.professionals.map((professional: CustomerProfessional) => (
-                      <View key={professional.id} className="w-full sm:w-[calc(50%-0.375rem)]">
-                        <ProfessionalCard
-                          professional={professional}
-                          serviceTitle={currentResult.service.title}
-                          serviceSummary={currentResult.service.summary}
-                          onViewProfile={() =>
-                            router.push(`/customer/professionals/${professional.id}`)
-                          }
-                        />
-                      </View>
-                    ))}
-                  </View>
-                )}
-              </>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    </AuthenticatedRoleScreen>
+              ) : (
+                <View className="mt-4 flex-row flex-wrap gap-3">
+                  {currentResult.professionals.map((professional: CustomerProfessional) => (
+                    <View key={professional.id} className="w-full sm:w-[calc(50%-0.375rem)]">
+                      <ProfessionalCard
+                        professional={professional}
+                        serviceTitle={currentResult.service.title}
+                        serviceSummary={currentResult.service.summary}
+                        onViewProfile={() =>
+                          router.push(`/customer/professionals/${professional.id}`)
+                        }
+                      />
+                    </View>
+                  ))}
+                </View>
+              )}
+            </>
+          )}
+        </View>
+      </ScrollView>
+    </View>
   );
 }

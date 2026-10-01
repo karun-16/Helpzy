@@ -1,6 +1,8 @@
 import { resolve } from 'node:path';
 import { z } from 'zod';
 
+const DEVELOPMENT_AUTH_JWT_SECRET = 'helpzy-local-development-jwt-secret-only';
+
 /**
  * Typed, validated runtime configuration.
  *
@@ -42,12 +44,53 @@ export const envSchema = z.object({
     .optional()
     .describe('PostgreSQL connection string. Required from PHASE 2 (Prisma) onwards.'),
 
-  AUTH_JWT_SECRET: z.string().default('helpzy-dev-secret-change-me'),
+  AUTH_JWT_SECRET: z.string().min(1).default(DEVELOPMENT_AUTH_JWT_SECRET),
   AUTH_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).default(86_400),
   OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
   MFA_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
 
+  MEDIA_UPLOAD_DIR: z
+    .string()
+    .default('uploads')
+    .describe('Directory used by the local media storage provider.'),
+  MEDIA_PUBLIC_BASE_URL: z
+    .string()
+    .default('/media')
+    .describe('Public path the API serves locally stored uploads from.'),
+  MEDIA_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(5 * 1024 * 1024)
+    .describe('Maximum accepted upload size in bytes.'),
+
+  PAYMENT_ONLINE_PROVIDER: z
+    .string()
+    .optional()
+    .describe(
+      'Name of the configured online payment gateway. When absent, no online path is offered at all.',
+    ),
+  PAYMENT_ONLINE_API_KEY: z.string().optional(),
+
+  LOCATION_STALE_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(15)
+    .describe('Age after which a shared professional location is shown as stale.'),
+
   TZ: z.string().default('Asia/Kolkata'),
+}).superRefine((env, context) => {
+  if (
+    env.NODE_ENV === 'production' &&
+    (env.AUTH_JWT_SECRET === DEVELOPMENT_AUTH_JWT_SECRET || env.AUTH_JWT_SECRET.length < 32)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['AUTH_JWT_SECRET'],
+      message: 'must be set to a unique random value of at least 32 characters in production.',
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -65,6 +108,13 @@ export interface AppConfig {
   authTokenTtlSeconds: number;
   otpTtlSeconds: number;
   mfaTtlSeconds: number;
+  mediaUploadDir: string;
+  mediaPublicBaseUrl: string;
+  mediaMaxBytes: number;
+  /** Present only when a real online gateway is configured. */
+  paymentOnlineProvider: string | undefined;
+  paymentOnlineApiKey: string | undefined;
+  locationStaleMinutes: number;
   timezone: string;
 }
 
@@ -82,6 +132,12 @@ export function toAppConfig(env: Env): AppConfig {
     authTokenTtlSeconds: env.AUTH_TOKEN_TTL_SECONDS,
     otpTtlSeconds: env.OTP_TTL_SECONDS,
     mfaTtlSeconds: env.MFA_TTL_SECONDS,
+    mediaUploadDir: env.MEDIA_UPLOAD_DIR,
+    mediaPublicBaseUrl: env.MEDIA_PUBLIC_BASE_URL,
+    mediaMaxBytes: env.MEDIA_MAX_BYTES,
+    paymentOnlineProvider: env.PAYMENT_ONLINE_PROVIDER,
+    paymentOnlineApiKey: env.PAYMENT_ONLINE_API_KEY,
+    locationStaleMinutes: env.LOCATION_STALE_MINUTES,
     timezone: env.TZ,
   };
 }

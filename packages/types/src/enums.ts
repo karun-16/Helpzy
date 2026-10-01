@@ -56,6 +56,82 @@ export const TERMINAL_BOOKING_STATUSES: readonly BookingStatus[] = [
   BOOKING_STATUSES.CANCELLED,
 ];
 
+/**
+ * The post-acceptance booking lifecycle, in the only order the statuses may be
+ * reached. Both the API (which enforces it) and the apps (which render the next
+ * action) derive from this list so the state machine is never described twice.
+ *
+ * `COMPLETED_BY_PROFESSIONAL` is the boundary between the two actors: everything
+ * up to it is professional-controlled, and `CUSTOMER_CONFIRMED` is owned by the
+ * customer who holds the booking. Payment then extends the chain to `CLOSED`.
+ */
+export const BOOKING_LIFECYCLE: readonly BookingStatus[] = [
+  BOOKING_STATUSES.ACCEPTED,
+  BOOKING_STATUSES.SCHEDULED,
+  BOOKING_STATUSES.ON_THE_WAY,
+  BOOKING_STATUSES.IN_PROGRESS,
+  BOOKING_STATUSES.COMPLETED_BY_PROFESSIONAL,
+  BOOKING_STATUSES.CUSTOMER_CONFIRMED,
+  BOOKING_STATUSES.PAYMENT_PENDING,
+  BOOKING_STATUSES.PAID,
+  BOOKING_STATUSES.CLOSED,
+];
+
+/** The lifecycle step a professional may perform from each of these statuses. */
+export const PROFESSIONAL_LIFECYCLE_STATUSES = [
+  BOOKING_STATUSES.SCHEDULED,
+  BOOKING_STATUSES.ON_THE_WAY,
+  BOOKING_STATUSES.IN_PROGRESS,
+  BOOKING_STATUSES.COMPLETED_BY_PROFESSIONAL,
+] as const;
+
+export type ProfessionalLifecycleStatus = (typeof PROFESSIONAL_LIFECYCLE_STATUSES)[number];
+
+/** The single lifecycle step a customer may perform. */
+export const CUSTOMER_LIFECYCLE_STATUS = BOOKING_STATUSES.CUSTOMER_CONFIRMED;
+
+/**
+ * Payment steps. These are driven by the payment record rather than by a user
+ * pressing a "next" button, so they are modelled separately from the
+ * professional/customer lifecycle above.
+ */
+export const PAYMENT_LIFECYCLE_STATUSES: readonly BookingStatus[] = [
+  BOOKING_STATUSES.PAYMENT_PENDING,
+  BOOKING_STATUSES.PAID,
+  BOOKING_STATUSES.CLOSED,
+] as const;
+
+export type PaymentLifecycleStatus = (typeof PAYMENT_LIFECYCLE_STATUSES)[number];
+
+/**
+ * Booking statuses a customer may still act on directly (confirm completion,
+ * start payment). Derived, so it follows the sequence automatically.
+ */
+export const CUSTOMER_ACTIONABLE_STATUSES: readonly BookingStatus[] = [
+  BOOKING_STATUSES.COMPLETED_BY_PROFESSIONAL,
+  BOOKING_STATUSES.CUSTOMER_CONFIRMED,
+  BOOKING_STATUSES.PAYMENT_PENDING,
+];
+
+/** Narrows an untrusted value to a professional-owned lifecycle step. */
+export function isProfessionalLifecycleStatus(value: string): value is ProfessionalLifecycleStatus {
+  return (PROFESSIONAL_LIFECYCLE_STATUSES as readonly string[]).includes(value);
+}
+
+/** The status that may follow `current`, or `null` if the flow has ended. */
+export function nextBookingLifecycleStatus(current: BookingStatus): BookingStatus | null {
+  const index = BOOKING_LIFECYCLE.indexOf(current);
+  if (index < 0 || index === BOOKING_LIFECYCLE.length - 1) return null;
+  return BOOKING_LIFECYCLE[index + 1] ?? null;
+}
+
+/** The status a destination must currently be in to be reached, or `null`. */
+export function previousBookingLifecycleStatus(next: BookingStatus): BookingStatus | null {
+  const index = BOOKING_LIFECYCLE.indexOf(next);
+  if (index <= 0) return null;
+  return BOOKING_LIFECYCLE[index - 1] ?? null;
+}
+
 export const PAYMENT_STATUSES = {
   PENDING: 'PENDING',
   PROCESSING: 'PROCESSING',
@@ -73,6 +149,18 @@ export const PAYMENT_METHODS = {
 
 export type PaymentMethod = (typeof PAYMENT_METHODS)[keyof typeof PAYMENT_METHODS];
 
+/**
+ * A review is written `PENDING` and only becomes visible on a professional's
+ * profile once it is `PUBLISHED`. Nothing renders a non-published review.
+ */
+export const REVIEW_STATUSES = {
+  PENDING: 'PENDING',
+  PUBLISHED: 'PUBLISHED',
+  REJECTED: 'REJECTED',
+} as const;
+
+export type ReviewStatus = (typeof REVIEW_STATUSES)[keyof typeof REVIEW_STATUSES];
+
 export const USER_STATUSES = {
   ACTIVE: 'ACTIVE',
   SUSPENDED: 'SUSPENDED',
@@ -80,6 +168,45 @@ export const USER_STATUSES = {
 } as const;
 
 export type UserStatus = (typeof USER_STATUSES)[keyof typeof USER_STATUSES];
+
+export const ADDRESS_TYPES = {
+  HOME: 'HOME',
+  WORK: 'WORK',
+  OTHER: 'OTHER',
+} as const;
+
+export type AddressType = (typeof ADDRESS_TYPES)[keyof typeof ADDRESS_TYPES];
+
+export const NOTIFICATION_TYPES = {
+  BOOKING_REQUESTED: 'BOOKING_REQUESTED',
+  BOOKING_ACCEPTED: 'BOOKING_ACCEPTED',
+  BOOKING_REJECTED: 'BOOKING_REJECTED',
+  BOOKING_SCHEDULED: 'BOOKING_SCHEDULED',
+  BOOKING_ON_THE_WAY: 'BOOKING_ON_THE_WAY',
+  BOOKING_IN_PROGRESS: 'BOOKING_IN_PROGRESS',
+  BOOKING_COMPLETED: 'BOOKING_COMPLETED',
+  BOOKING_CONFIRMED: 'BOOKING_CONFIRMED',
+  PAYMENT_PENDING: 'PAYMENT_PENDING',
+  PAYMENT_PAID: 'PAYMENT_PAID',
+  PAYMENT_FAILED: 'PAYMENT_FAILED',
+  BOOKING_CANCELLED: 'BOOKING_CANCELLED',
+  REVIEW_RECEIVED: 'REVIEW_RECEIVED',
+  VERIFICATION_DECISION: 'VERIFICATION_DECISION',
+  SYSTEM: 'SYSTEM',
+} as const;
+
+export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
+
+/**
+ * Statuses that mean a service is actively under way. A customer may see the
+ * assigned professional's shared location only while a booking is in one of
+ * these states.
+ */
+export const ACTIVE_JOB_STATUSES: readonly BookingStatus[] = [
+  BOOKING_STATUSES.SCHEDULED,
+  BOOKING_STATUSES.ON_THE_WAY,
+  BOOKING_STATUSES.IN_PROGRESS,
+];
 
 export const PROFESSIONAL_VERIFICATION_STATUSES = {
   UNVERIFIED: 'UNVERIFIED',

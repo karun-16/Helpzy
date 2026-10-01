@@ -1,14 +1,22 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
-import { ROLES } from '@helpzy/types';
 
-import { AuthGuard } from '../auth/auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { OptionalAuthGuard } from '../auth/optional-auth.guard';
 import { CustomerDiscoveryService } from './customer-discovery.service';
 
+/**
+ * The public marketplace catalogue.
+ *
+ * Readable without a session and by every role, because `/` is one shared
+ * marketplace: a guest browsing it, a customer signing in, and a professional
+ * opening Marketplace from their header all get the same categories and
+ * professionals. The response contains no customer data and no professional
+ * contact detail that the professional has not published - a phone number
+ * appears only when `isPhoneVisible` is set - so nothing private is exposed by
+ * widening this. Booking, address and account routes stay behind `AuthGuard` and
+ * `RolesGuard`.
+ */
 @Controller('customer')
-@UseGuards(AuthGuard, RolesGuard)
-@Roles(ROLES.CUSTOMER)
+@UseGuards(OptionalAuthGuard)
 export class CustomerDiscoveryController {
   constructor(private readonly discoveryService: CustomerDiscoveryService) {}
 

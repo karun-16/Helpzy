@@ -29,6 +29,8 @@ export interface AuthUser {
   fullName: string;
   role: 'CUSTOMER' | 'PROFESSIONAL' | 'ADMIN';
   status: string;
+  /** Display only. Lets the header avatar survive a refresh without a fetch. */
+  avatarUrl?: string | null;
   mfaVerified?: boolean;
 }
 

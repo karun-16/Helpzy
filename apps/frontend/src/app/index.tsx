@@ -1,5 +1,5 @@
-import { HelpzyLandingPage } from '@/components/helpzy-landing';
+import { CustomerHomeScreen } from '@/components/customer-home-screen';
 
 export default function IndexScreen() {
-  return <HelpzyLandingPage />;
+  return <CustomerHomeScreen publicMode />;
 }

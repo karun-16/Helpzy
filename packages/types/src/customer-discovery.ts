@@ -1,4 +1,5 @@
 import type { ProfessionalVerificationStatus } from './enums';
+import type { ProfessionalReview, ProfessionalServiceOffering, WorkingHour } from './marketplace';
 
 export interface CustomerService {
   id: string;
@@ -38,14 +39,12 @@ export interface CustomerServiceProfessionalsResponse {
   professionals: CustomerProfessional[];
 }
 
-export interface CustomerProfessionalProfile {
-  id: string;
-  fullName: string;
-  businessName: string;
-  bio: string | null;
-  verification: ProfessionalVerificationStatus;
-  serviceArea: string | null;
-  averageRating?: number;
-  ratingCount?: number;
+export interface CustomerProfessionalProfile extends CustomerProfessional {
+  avatarUrl: string | null;
+  completedCount: number;
+  reviews: ProfessionalReview[];
   services: CustomerDiscoveryService[];
+  offerings: ProfessionalServiceOffering[];
+  yearsOfExperience?: number;
+  workingHours?: WorkingHour[];
 }

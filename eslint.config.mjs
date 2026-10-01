@@ -65,8 +65,17 @@ export default tseslint.config(
     },
   },
   {
-    // Build-time and one-off scripts report to the terminal on purpose.
-    files: ['**/*.config.js', '**/*.config.cjs', '**/*.cjs', 'scripts/**', '**/prisma/*.ts'],
+    // Build-time and one-off scripts report to the terminal on purpose. The
+    // glob is workspace-agnostic so a package-level `scripts/` directory (for
+    // example `backend/api/scripts/`) is treated the same as the root one.
+    files: [
+      '**/*.config.js',
+      '**/*.config.cjs',
+      '**/*.cjs',
+      'scripts/**',
+      '**/scripts/**',
+      '**/prisma/*.ts',
+    ],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
       'no-console': 'off',

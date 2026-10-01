@@ -26,7 +26,13 @@ describe('configuration', () => {
 describe('CORS allow-list', () => {
   // Go through the real schema so defaults are applied exactly as in production.
   const build = (apiCorsOrigins: string) =>
-    toAppConfig(envSchema.parse({ NODE_ENV: 'production', API_CORS_ORIGINS: apiCorsOrigins }));
+    toAppConfig(
+      envSchema.parse({
+        NODE_ENV: 'production',
+        API_CORS_ORIGINS: apiCorsOrigins,
+        AUTH_JWT_SECRET: 'test-only-jwt-secret-long-enough-for-validation',
+      }),
+    );
 
   it('parses an explicit list and trims whitespace', () => {
     expect(build(' http://localhost:8081 , http://a.test ').corsOrigins).toEqual([
@@ -51,5 +57,25 @@ describe('CORS allow-list', () => {
       'http://localhost:19006',
       'http://127.0.0.1:19006',
     ]);
+  });
+});
+
+describe('production authentication configuration', () => {
+  it('rejects the development JWT default in production', () => {
+    const developmentSecret = envSchema.parse({ NODE_ENV: 'development' }).AUTH_JWT_SECRET;
+
+    expect(() => envSchema.parse({ NODE_ENV: 'production' })).toThrow(/AUTH_JWT_SECRET/);
+    expect(() =>
+      envSchema.parse({ NODE_ENV: 'production', AUTH_JWT_SECRET: developmentSecret }),
+    ).toThrow(/AUTH_JWT_SECRET/);
+  });
+
+  it('accepts an explicitly configured production JWT secret of sufficient length', () => {
+    expect(
+      envSchema.safeParse({
+        NODE_ENV: 'production',
+        AUTH_JWT_SECRET: 'a'.repeat(32),
+      }).success,
+    ).toBe(true);
   });
 });

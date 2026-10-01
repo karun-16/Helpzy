@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { PROFESSIONAL_VERIFICATION_STATUSES } from '@helpzy/types';
 
+import {
+  professionalReviewSchema,
+  professionalServiceOfferingSchema,
+  workingHoursSchema,
+} from './marketplace';
+
 const customerServiceSchema = z.object({
   id: z.string().uuid(),
   title: z.string(),
@@ -46,7 +52,13 @@ export const customerServiceProfessionalsSchema = z.object({
 });
 
 export const customerProfessionalProfileSchema = professionalSchema.extend({
+  avatarUrl: z.string().nullable(),
+  completedCount: z.number().int().nonnegative(),
+  reviews: z.array(professionalReviewSchema).default([]),
   services: z.array(discoveryServiceSchema),
+  offerings: z.array(professionalServiceOfferingSchema).default([]),
+  yearsOfExperience: z.number().int().nonnegative().optional(),
+  workingHours: workingHoursSchema.optional(),
 });
 
 export const customerAvailableProfessionalsSchema = z.array(customerProfessionalProfileSchema);

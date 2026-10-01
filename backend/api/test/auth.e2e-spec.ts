@@ -18,9 +18,11 @@ describe('Auth (e2e)', () => {
       update: jest.Mock;
     };
     customerProfile: { create: jest.Mock };
-    professionalProfile: { create: jest.Mock };
+    professionalProfile: { create: jest.Mock; findMany: jest.Mock };
     serviceCategory: { findMany: jest.Mock };
     service: { findFirst: jest.Mock };
+    review: { findMany: jest.Mock };
+    booking: { groupBy: jest.Mock };
   };
 
   beforeAll(async () => {
@@ -33,9 +35,11 @@ describe('Auth (e2e)', () => {
         update: jest.fn(),
       },
       customerProfile: { create: jest.fn() },
-      professionalProfile: { create: jest.fn() },
+      professionalProfile: { create: jest.fn(), findMany: jest.fn() },
       serviceCategory: { findMany: jest.fn() },
       service: { findFirst: jest.fn() },
+      review: { findMany: jest.fn() },
+      booking: { groupBy: jest.fn() },
     };
 
     const transaction = {
@@ -57,6 +61,8 @@ describe('Auth (e2e)', () => {
         professionalProfile: prisma.professionalProfile,
         serviceCategory: prisma.serviceCategory,
         service: prisma.service,
+        review: prisma.review,
+        booking: prisma.booking,
       })
       .compile();
 
@@ -152,7 +158,7 @@ describe('Auth (e2e)', () => {
     expect(dashboardResponse.body.data.dashboard).toBe('professional');
   });
 
-  it('serves database-backed discovery only to authenticated customers', async () => {
+  it('serves database-backed discovery to guests and every signed-in role', async () => {
     const customer = {
       id: 'customer-1',
       email: 'customer@helpzy.test',
@@ -165,13 +171,19 @@ describe('Auth (e2e)', () => {
     const professional = {
       id: 'professional-1',
       fullName: 'Meera Iyer',
+      avatarUrl: null,
       professionalProfile: {
         businessName: 'Meera Home Care',
         bio: 'Home cleaning and appliance servicing.',
         verification: 'VERIFIED',
         serviceArea: 'Bengaluru',
-        averageRating: 0,
+        // No reviews and no completed jobs yet, so the profile must show an
+        // absent rating and a zero count rather than an invented 5.0.
+        averageRating: { toNumber: () => 0 },
         ratingCount: 0,
+        contactEmail: 'meera@example.test',
+        yearsOfExperience: 6,
+        workingHours: [{ day: 1, start: '09:00', end: '18:00' }],
       },
       services: [
         {
@@ -179,6 +191,11 @@ describe('Auth (e2e)', () => {
           title: 'AC servicing',
           summary: 'Split and window AC service.',
           category: { id: 'category-000001', slug: 'home-services', name: 'Home Services' },
+          // Prisma returns money as a Decimal, so the mock mirrors that rather
+          // than a bare number the real query would never produce.
+          basePrice: { toNumber: () => 1499 },
+          currency: 'INR',
+          durationMinutes: 90,
         },
       ],
     };
@@ -196,9 +213,6 @@ describe('Auth (e2e)', () => {
       return loginResponse.body.data.token as string;
     };
 
-    await request(app.getHttpServer()).get('/api/v1/customer/services').expect(401);
-
-    const customerToken = await loginAs(customer);
     prisma.serviceCategory.findMany.mockResolvedValue([
       {
         id: 'category-000001',
@@ -209,6 +223,13 @@ describe('Auth (e2e)', () => {
         services: [{ id: 'service-00000001', title: 'AC servicing', summary: 'AC maintenance.' }],
       },
     ]);
+    // A guest sees the marketplace, because `/` is the public discovery surface.
+    const guestResponse = await request(app.getHttpServer())
+      .get('/api/v1/customer/services')
+      .expect(200);
+    expect(guestResponse.body.data[0].services[0].title).toBe('AC servicing');
+
+    const customerToken = await loginAs(customer);
     const categoriesResponse = await request(app.getHttpServer())
       .get('/api/v1/customer/services')
       .set('Authorization', `Bearer ${customerToken}`)
@@ -217,11 +238,23 @@ describe('Auth (e2e)', () => {
     expect(categoriesResponse.body.data[0].services[0].title).toBe('AC servicing');
 
     prisma.user.findMany.mockResolvedValue([professional]);
+    // A professional with no history: no published reviews, no closed bookings.
+    prisma.review.findMany.mockResolvedValue([]);
+    prisma.professionalProfile.findMany.mockResolvedValue([
+      { id: 'professional-profile-1', userId: 'professional-1' },
+    ]);
+    prisma.booking.groupBy.mockResolvedValue([]);
     const availableResponse = await request(app.getHttpServer())
       .get('/api/v1/customer/professionals')
       .set('Authorization', `Bearer ${customerToken}`)
       .expect(200);
     expect(availableResponse.body.data[0].businessName).toBe('Meera Home Care');
+    // Honest empty state, not a fabricated rating.
+    expect(availableResponse.body.data[0]).toEqual(
+      expect.objectContaining({ completedCount: 0, reviews: [] }),
+    );
+    expect(availableResponse.body.data[0].averageRating).toBeUndefined();
+    expect(availableResponse.body.data[0].yearsOfExperience).toBe(6);
 
     prisma.service.findFirst.mockResolvedValue({
       id: 'service-00000001',
@@ -243,6 +276,8 @@ describe('Auth (e2e)', () => {
       .expect(200);
     expect(profileResponse.body.data.services[0].title).toBe('AC servicing');
 
+    // A professional reaches the same marketplace from the header, so the
+    // catalogue is not customer-only.
     const professionalToken = await loginAs({
       ...customer,
       id: 'professional-1',
@@ -252,17 +287,17 @@ describe('Auth (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/v1/customer/services')
       .set('Authorization', `Bearer ${professionalToken}`)
-      .expect(403);
+      .expect(200);
 
-    const adminToken = await loginAs({
-      ...customer,
-      id: 'admin-1',
-      phone: '+919800000001',
-      role: 'ADMIN',
-    });
+    // A private customer route is still scoped to customers: widening discovery
+    // must not widen anything owned.
     await request(app.getHttpServer())
-      .get('/api/v1/customer/professionals')
-      .set('Authorization', `Bearer ${adminToken}`)
+      .get('/api/v1/customer/account/profile')
+      .set('Authorization', `Bearer ${professionalToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get('/api/v1/customer/bookings')
+      .set('Authorization', `Bearer ${professionalToken}`)
       .expect(403);
   });
 

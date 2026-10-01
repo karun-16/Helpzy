@@ -1,11 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   API_ERROR_CODES,
+  BOOKING_STATUSES,
   ROLES,
+  REVIEW_STATUSES,
   type CustomerProfessional,
   type CustomerProfessionalProfile,
   type CustomerServiceCategory,
 } from '@helpzy/types';
+import { professionalMarketplaceProfileSchema, workingHoursSchema } from '@helpzy/validation';
 
 import { PrismaService } from '../database/prisma.service';
 
@@ -15,6 +18,14 @@ const AVAILABLE_PROFESSIONAL_FILTER = {
   professionalProfile: { isNot: null },
 };
 
+/**
+ * Only real, verifiable data reaches the customer-facing profile.
+ *
+ * A rating average is shown only when reviews actually exist, and a completion
+ * count is derived from closed bookings rather than read from a stored field a
+ * professional could edit. A new professional therefore appears with no rating
+ * and zero completed jobs instead of a fabricated 5.0.
+ */
 @Injectable()
 export class CustomerDiscoveryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -68,16 +79,8 @@ export class CustomerDiscoveryService {
           select: {
             id: true,
             fullName: true,
-            professionalProfile: {
-              select: {
-                businessName: true,
-                bio: true,
-                verification: true,
-                serviceArea: true,
-                averageRating: true,
-                ratingCount: true,
-              },
-            },
+            phone: true,
+            professionalProfile: { select: PROFILE_SUMMARY_SELECT },
           },
         },
       },
@@ -91,149 +94,289 @@ export class CustomerDiscoveryService {
     }
 
     const { owner, ...serviceDetails } = service;
+    // The list view stays light; the full profile is fetched on demand.
     return {
       service: serviceDetails,
-      professionals: [this.toProfessional(owner)],
+      professionals: [toProfessionalSummary(owner)],
     };
   }
 
   async getProfessionalProfile(professionalId: string) {
     const user = await this.prisma.user.findFirst({
-      where: {
-        id: professionalId,
-        ...AVAILABLE_PROFESSIONAL_FILTER,
-      },
+      where: { id: professionalId, ...AVAILABLE_PROFESSIONAL_FILTER },
       select: {
         id: true,
         fullName: true,
-        professionalProfile: {
-          select: {
-            businessName: true,
-            bio: true,
-            verification: true,
-            serviceArea: true,
-            averageRating: true,
-            ratingCount: true,
-          },
-        },
+        phone: true,
+        avatarUrl: true,
+        professionalProfile: { select: PROFILE_SUMMARY_SELECT },
         services: {
-          where: {
-            isActive: true,
-            category: { isActive: true },
-          },
+          where: { isActive: true, category: { isActive: true } },
           orderBy: { title: 'asc' },
           select: {
             id: true,
             title: true,
             summary: true,
+            description: true,
+            basePrice: true,
+            currency: true,
+            durationMinutes: true,
             category: { select: { id: true, slug: true, name: true } },
           },
         },
       },
     });
 
-    if (!user?.professionalProfile) {
-      throw new NotFoundException({
-        code: API_ERROR_CODES.NOT_FOUND,
-        message: 'The selected professional profile was not found.',
-      });
-    }
+    if (!user?.professionalProfile) throw professionalNotFound();
 
-    return {
-      ...this.toProfessional({
-        id: user.id,
-        fullName: user.fullName,
-        professionalProfile: user.professionalProfile,
-      }),
-      services: user.services,
-    };
+    const [profile] = await this.hydrateMarketplaceProfiles([user]);
+    if (!profile) throw professionalNotFound();
+    return profile;
   }
 
   async getAvailableProfessionals(): Promise<CustomerProfessionalProfile[]> {
     const users = await this.prisma.user.findMany({
       where: {
         ...AVAILABLE_PROFESSIONAL_FILTER,
-        services: {
-          some: {
-            isActive: true,
-            category: { isActive: true },
-          },
-        },
+        services: { some: { isActive: true, category: { isActive: true } } },
       },
       orderBy: { fullName: 'asc' },
       select: {
         id: true,
         fullName: true,
-        professionalProfile: {
-          select: {
-            businessName: true,
-            bio: true,
-            verification: true,
-            serviceArea: true,
-            averageRating: true,
-            ratingCount: true,
-          },
-        },
+        phone: true,
+        avatarUrl: true,
+        professionalProfile: { select: PROFILE_SUMMARY_SELECT },
         services: {
-          where: {
-            isActive: true,
-            category: { isActive: true },
-          },
+          where: { isActive: true, category: { isActive: true } },
           orderBy: { title: 'asc' },
           select: {
             id: true,
             title: true,
             summary: true,
+            description: true,
+            basePrice: true,
+            currency: true,
+            durationMinutes: true,
             category: { select: { id: true, slug: true, name: true } },
           },
         },
       },
     });
 
-    return users.flatMap((user) =>
-      user.professionalProfile
-        ? [
-            {
-              ...this.toProfessional(user),
-              services: user.services,
-            },
-          ]
-        : [],
-    );
+    return this.hydrateMarketplaceProfiles(users);
   }
 
-  private toProfessional<
-    T extends {
+  /**
+   * Attaches the data that needs a second query - real reviews and a real
+   * completed-booking count - to each professional summary.
+   *
+   * Batched so the list view stays a fixed number of round trips rather than
+   * two per professional.
+   */
+  private async hydrateMarketplaceProfiles(
+    users: Array<{
       id: string;
       fullName: string;
-      professionalProfile: {
-        businessName: string;
-        bio: string | null;
-        verification: CustomerProfessional['verification'];
-        serviceArea: string | null;
-        averageRating: { toNumber: () => number };
-        ratingCount: number;
-      } | null;
-    },
-  >(user: T): CustomerProfessional {
-    const profile = user.professionalProfile;
-    if (!profile) {
-      throw new NotFoundException({
-        code: API_ERROR_CODES.NOT_FOUND,
-        message: 'The selected professional profile was not found.',
-      });
-    }
+      phone: string | null;
+      avatarUrl: string | null;
+      professionalProfile: ProfileSummary | null;
+      services: ServiceSummary[];
+    }>,
+  ): Promise<CustomerProfessionalProfile[]> {
+    const eligible = users.filter((user) => user.professionalProfile !== null);
+    if (eligible.length === 0) return [];
 
-    return {
-      id: user.id,
-      fullName: user.fullName,
-      businessName: profile.businessName,
-      bio: profile.bio,
-      verification: profile.verification,
-      serviceArea: profile.serviceArea,
-      ...(profile.ratingCount > 0
-        ? { averageRating: profile.averageRating.toNumber(), ratingCount: profile.ratingCount }
-        : {}),
-    };
+    const userIds = eligible.map((user) => user.id);
+
+    const [reviewsByUser, completedCounts] = await Promise.all([
+      this.recentReviewsByUser(userIds),
+      this.completedCountsByUser(userIds),
+    ]);
+
+    return eligible.map((user) => {
+      const profile = user.professionalProfile!;
+      return {
+        ...toProfessionalSummary(user),
+        bio: profile.bio,
+        avatarUrl: user.avatarUrl,
+        ...(profile.isPhoneVisible && user.phone ? { phone: user.phone } : {}),
+        contactEmail: profile.contactEmail,
+        yearsOfExperience: profile.yearsOfExperience ?? undefined,
+        workingHours: toWorkingHours(profile.workingHours),
+        completedCount: completedCounts.get(user.id) ?? 0,
+        reviews: reviewsByUser.get(user.id) ?? [],
+        services: user.services,
+        offerings: user.services.map(toOffering),
+      };
+    });
+  }
+
+  private async recentReviewsByUser(userIds: string[]) {
+    // Reviews belong to a booking, and a booking belongs to a professional
+    // profile, so the professional is reached through `booking.professional`.
+    const reviews = await this.prisma.review.findMany({
+      where: {
+        status: REVIEW_STATUSES.PUBLISHED,
+        booking: { professional: { userId: { in: userIds } } },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        rating: true,
+        comment: true,
+        createdAt: true,
+        booking: {
+          select: {
+            professional: { select: { userId: true } },
+            service: { select: { title: true } },
+          },
+        },
+        customer: { select: { fullName: true } },
+      },
+    });
+
+    // Keep each professional's list short while still ordering globally.
+    const perUser = new Map<string, CustomerProfessionalProfile['reviews']>();
+    for (const review of reviews) {
+      const ownerId = review.booking.professional.userId;
+      const bucket = perUser.get(ownerId) ?? [];
+      if (bucket.length >= MAX_REVIEWS_PER_PROFESSIONAL) continue;
+      bucket.push({
+        id: review.id,
+        rating: review.rating,
+        comment: review.comment,
+        // Only the first name is public; a review is not permission to publish
+        // a customer's full name.
+        customerName: firstNameOnly(review.customer.fullName),
+        serviceTitle: review.booking.service?.title ?? '',
+        createdAt: review.createdAt.toISOString(),
+      });
+      perUser.set(ownerId, bucket);
+    }
+    return perUser;
+  }
+
+  private async completedCountsByUser(userIds: string[]) {
+    // Grouped in the database rather than by loading every booking row.
+    const grouped = await this.prisma.booking.groupBy({
+      by: ['professionalId'],
+      where: {
+        status: BOOKING_STATUSES.CLOSED,
+        professional: { userId: { in: userIds } },
+      },
+      _count: { _all: true },
+    });
+
+    const professionalUserIds = await this.prisma.professionalProfile.findMany({
+      where: { userId: { in: userIds } },
+      select: { id: true, userId: true },
+    });
+    const userIdByProfileId = new Map(professionalUserIds.map((p) => [p.id, p.userId]));
+
+    const counts = new Map<string, number>();
+    for (const row of grouped) {
+      const userId = userIdByProfileId.get(row.professionalId);
+      if (userId) counts.set(userId, row._count._all);
+    }
+    return counts;
   }
 }
+
+const MAX_REVIEWS_PER_PROFESSIONAL = 20;
+
+const PROFILE_SUMMARY_SELECT = {
+  businessName: true,
+  bio: true,
+  verification: true,
+  serviceArea: true,
+  averageRating: true,
+  ratingCount: true,
+  contactEmail: true,
+  isPhoneVisible: true,
+  yearsOfExperience: true,
+  workingHours: true,
+} as const;
+
+type ProfileSummary = {
+  businessName: string;
+  bio: string | null;
+  verification: CustomerProfessional['verification'];
+  serviceArea: string | null;
+  averageRating: { toNumber: () => number };
+  ratingCount: number;
+  contactEmail: string | null;
+  isPhoneVisible: boolean;
+  yearsOfExperience: number | null;
+  workingHours: unknown;
+};
+
+type ServiceSummary = {
+  id: string;
+  title: string;
+  summary: string | null;
+  description: string;
+  basePrice: { toNumber: () => number };
+  currency: string;
+  durationMinutes: number;
+  category: { id: string; slug: string; name: string };
+};
+
+function toProfessionalSummary(user: {
+  id: string;
+  fullName: string;
+  phone?: string | null;
+  professionalProfile: ProfileSummary | null;
+}): CustomerProfessional {
+  const profile = user.professionalProfile;
+  if (!profile) throw professionalNotFound();
+
+  return {
+    id: user.id,
+    fullName: user.fullName,
+    businessName: profile.businessName,
+    bio: profile.bio,
+    verification: profile.verification,
+    serviceArea: profile.serviceArea,
+    // An unrated professional has no average at all. Inventing 0.0 would read as
+    // "terrible reviews" rather than "no reviews yet".
+    ...(profile.ratingCount > 0
+      ? { averageRating: profile.averageRating.toNumber(), ratingCount: profile.ratingCount }
+      : {}),
+    ...(profile.contactEmail ? { contactEmail: profile.contactEmail } : {}),
+    ...(profile.yearsOfExperience !== null ? { yearsOfExperience: profile.yearsOfExperience } : {}),
+    ...(profile.isPhoneVisible && user.phone ? { phone: user.phone } : {}),
+  };
+}
+
+function toOffering(service: ServiceSummary) {
+  return {
+    ...service,
+    description: service.description,
+    priceAmount: service.basePrice.toNumber(),
+  };
+}
+
+/**
+ * The working-hours column is `Json`, so its shape is only guaranteed at
+ * runtime. It is re-validated here against the shared schema instead of being
+ * cast, so a hand-edited or legacy row degrades to "no working hours shown"
+ * rather than crashing a customer-facing profile.
+ */
+function toWorkingHours(value: unknown) {
+  const parsed = workingHoursSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function professionalNotFound() {
+  return new NotFoundException({
+    code: API_ERROR_CODES.NOT_FOUND,
+    message: 'The selected professional profile was not found.',
+  });
+}
+
+function firstNameOnly(fullName: string): string {
+  return fullName.trim().split(/\s+/)[0] ?? fullName;
+}
+
+export { professionalMarketplaceProfileSchema };

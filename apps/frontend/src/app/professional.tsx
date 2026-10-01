@@ -1,5 +1,5 @@
-import { AuthenticatedRoleScreen } from '@/components/authenticated-role-screen';
+import { ProfessionalDashboardScreen } from '@/components/professional-bookings-screen';
 
 export default function ProfessionalRoute() {
-  return <AuthenticatedRoleScreen role="PROFESSIONAL" />;
+  return <ProfessionalDashboardScreen />;
 }
