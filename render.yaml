@@ -29,12 +29,19 @@ services:
     plan: free
     region: singapore
 
-    # `packageManager` in package.json pins pnpm 11.19.0; Corepack activates it so
-    # the committed pnpm-lock.yaml is used exactly as written.
+    # `corepack pnpm ...`, deliberately NOT `corepack enable`.
+    #
+    # `corepack enable` only writes shims next to the node binary, and in Render's
+    # image that is the read-only `/usr/bin`, where pnpm already exists. It fails
+    # with `EROFS: read-only file system, unlink '/usr/bin/pnpm'` before a single
+    # dependency is installed.
+    #
+    # The meta-command needs no shims: it reads `packageManager` from package.json
+    # and runs that exact version - pnpm 11.19.0 - out of COREPACK_HOME, which is
+    # under $HOME and writable. Same guarantee, no privileged write.
     buildCommand: >-
-      corepack enable &&
-      pnpm install --frozen-lockfile &&
-      pnpm build
+      corepack pnpm install --frozen-lockfile &&
+      corepack pnpm build
 
     startCommand: node backend/api/dist/main.js
 
