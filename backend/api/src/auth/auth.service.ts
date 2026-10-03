@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -115,6 +116,8 @@ const FALLBACK_USERS: Record<string, UserRecord> = {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private warnedAboutInMemoryChallenges = false;
   private readonly otpChallenges = new Map<string, StoredOtpChallenge>();
   private readonly registrationOtpChallenges = new Map<string, RegistrationOtpChallenge>();
   private readonly mfaChallenges = new Map<string, StoredOtpChallenge>();
@@ -144,15 +147,34 @@ export class AuthService {
     }
 
     const code = this.createOtpCode();
-    const expiresAt = Date.now() + this.config.otpTtlSeconds * 1000;
+    const expiresAt = new Date(Date.now() + this.config.otpTtlSeconds * 1000);
 
-    this.otpChallenges.set(normalizedPhone, {
-      phone: normalizedPhone,
-      userId: user.id,
-      code,
-      expiresAt,
-      attempts: 0,
-    });
+    if (this.hasLoginChallengeStore()) {
+      await this.prisma.otpChallenge.upsert({
+        where: { phone: normalizedPhone },
+        update: {
+          code,
+          expiresAt,
+          attempts: 0,
+          userId: user.id,
+        },
+        create: {
+          phone: normalizedPhone,
+          userId: user.id,
+          code,
+          expiresAt,
+          attempts: 0,
+        },
+      });
+    } else {
+      this.otpChallenges.set(normalizedPhone, {
+        phone: normalizedPhone,
+        userId: user.id,
+        code,
+        expiresAt: expiresAt.getTime(),
+        attempts: 0,
+      });
+    }
 
     return {
       phone: normalizedPhone,
@@ -178,13 +200,34 @@ export class AuthService {
     }
 
     const code = this.createOtpCode();
-    this.registrationOtpChallenges.set(normalizedPhone, {
-      phone: normalizedPhone,
-      role,
-      code,
-      expiresAt: Date.now() + this.config.otpTtlSeconds * 1000,
-      attempts: 0,
-    });
+    const expiresAt = new Date(Date.now() + this.config.otpTtlSeconds * 1000);
+
+    if (this.hasRegistrationChallengeStore()) {
+      await this.prisma.registrationOtpChallenge.upsert({
+        where: { phone: normalizedPhone },
+        update: {
+          code,
+          expiresAt,
+          attempts: 0,
+          role,
+        },
+        create: {
+          phone: normalizedPhone,
+          role,
+          code,
+          expiresAt,
+          attempts: 0,
+        },
+      });
+    } else {
+      this.registrationOtpChallenges.set(normalizedPhone, {
+        phone: normalizedPhone,
+        role,
+        code,
+        expiresAt: expiresAt.getTime(),
+        attempts: 0,
+      });
+    }
 
     return {
       phone: normalizedPhone,
@@ -200,7 +243,8 @@ export class AuthService {
     role: 'CUSTOMER' | 'PROFESSIONAL',
   ): Promise<{ token: string; user: AuthSessionUser; mfaRequired: boolean }> {
     const normalizedPhone = this.normalizePhone(phone);
-    const challenge = this.registrationOtpChallenges.get(normalizedPhone);
+
+    const challenge = await this.loadRegistrationChallenge(normalizedPhone);
 
     if (
       !challenge ||
@@ -216,14 +260,20 @@ export class AuthService {
     }
 
     if (challenge.code !== String(otp).trim()) {
-      this.spendVerificationAttempt(this.registrationOtpChallenges, normalizedPhone, challenge);
+      await this.spendRegistrationVerificationAttempt(normalizedPhone);
       throw new UnauthorizedException({
         code: API_ERROR_CODES.OTP_INVALID,
         message: 'The registration OTP is incorrect. Check the code and try again.',
       });
     }
 
-    this.registrationOtpChallenges.delete(normalizedPhone);
+    if (!(await this.consumeRegistrationChallenge(normalizedPhone))) {
+      throw new UnauthorizedException({
+        code: API_ERROR_CODES.OTP_INVALID,
+        message:
+          'The registration OTP is invalid or has expired. Request a new code and try again.',
+      });
+    }
 
     try {
       const user = await this.prisma.$transaction(async (transaction) => {
@@ -277,7 +327,8 @@ export class AuthService {
     otp: string,
   ): Promise<{ token: string; user: AuthSessionUser; mfaRequired: boolean }> {
     const normalizedPhone = this.normalizePhone(phone);
-    const challenge = this.otpChallenges.get(normalizedPhone);
+
+    const challenge = await this.loadLoginChallenge(normalizedPhone);
 
     if (
       !challenge ||
@@ -292,10 +343,17 @@ export class AuthService {
 
     const trimmedOtp = String(otp).trim();
     if (challenge.code !== trimmedOtp) {
-      this.spendVerificationAttempt(this.otpChallenges, normalizedPhone, challenge);
+      await this.spendLoginVerificationAttempt(normalizedPhone);
       throw new UnauthorizedException({
         code: API_ERROR_CODES.OTP_INVALID,
         message: 'The OTP code does not match the one that was sent.',
+      });
+    }
+
+    if (!(await this.consumeLoginChallenge(normalizedPhone))) {
+      throw new UnauthorizedException({
+        code: API_ERROR_CODES.OTP_INVALID,
+        message: 'The OTP is invalid or has expired.',
       });
     }
 
@@ -306,8 +364,6 @@ export class AuthService {
         message: 'The session could not be matched to an active account.',
       });
     }
-
-    this.otpChallenges.delete(normalizedPhone);
 
     if (user.role === ROLES.ADMIN) {
       const adminMfaCode =
@@ -488,15 +544,155 @@ export class AuthService {
   }
 
   /**
+   * Counts one wrong guess against the stored challenge and destroys it once
+   * the ceiling is hit.
+   *
+   * Both writes are conditional so the row disappears exactly once the limit is
+   * reached, and neither swallows a database failure: silently dropping the
+   * increment would hand an attacker more guesses than the limit allows.
+   */
+  private async spendLoginVerificationAttempt(phone: string): Promise<void> {
+    if (this.hasLoginChallengeStore()) {
+      await this.prisma.otpChallenge.updateMany({
+        where: { phone },
+        data: { attempts: { increment: 1 } },
+      });
+      await this.prisma.otpChallenge.deleteMany({
+        where: { phone, attempts: { gte: OTP_VERIFY_ATTEMPT_LIMIT } },
+      });
+      return;
+    }
+
+    const challenge = this.otpChallenges.get(phone);
+    if (challenge) {
+      this.spendVerificationAttempt(this.otpChallenges, phone, challenge);
+    }
+  }
+
+  private async spendRegistrationVerificationAttempt(phone: string): Promise<void> {
+    if (this.hasRegistrationChallengeStore()) {
+      await this.prisma.registrationOtpChallenge.updateMany({
+        where: { phone },
+        data: { attempts: { increment: 1 } },
+      });
+      await this.prisma.registrationOtpChallenge.deleteMany({
+        where: { phone, attempts: { gte: OTP_VERIFY_ATTEMPT_LIMIT } },
+      });
+      return;
+    }
+
+    const challenge = this.registrationOtpChallenges.get(phone);
+    if (challenge) {
+      challenge.attempts += 1;
+      if (challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT) {
+        this.registrationOtpChallenges.delete(phone);
+      }
+    }
+  }
+
+  private async loadLoginChallenge(phone: string): Promise<StoredOtpChallenge | null> {
+    if (this.hasLoginChallengeStore()) {
+      const row = await this.prisma.otpChallenge.findUnique({ where: { phone } });
+      if (!row) return null;
+      return {
+        phone: row.phone,
+        userId: row.userId,
+        code: row.code,
+        expiresAt: row.expiresAt.getTime(),
+        attempts: row.attempts,
+      };
+    }
+    return this.otpChallenges.get(phone) ?? null;
+  }
+
+  private async loadRegistrationChallenge(phone: string): Promise<RegistrationOtpChallenge | null> {
+    if (this.hasRegistrationChallengeStore()) {
+      const row = await this.prisma.registrationOtpChallenge.findUnique({ where: { phone } });
+      if (!row) return null;
+      return {
+        phone: row.phone,
+        role: row.role as 'CUSTOMER' | 'PROFESSIONAL',
+        code: row.code,
+        expiresAt: row.expiresAt.getTime(),
+        attempts: row.attempts,
+      };
+    }
+    return this.registrationOtpChallenges.get(phone) ?? null;
+  }
+
+  /**
+   * Claims the challenge by deleting it, so a single code can never be spent
+   * twice even when two instances verify it at the same moment.
+   *
+   * Returns false when there was nothing left to claim, which is how a replayed
+   * or already consumed code is rejected. Database failures are deliberately not
+   * swallowed, because leaving the row behind would keep the code usable.
+   */
+  private async consumeLoginChallenge(phone: string): Promise<boolean> {
+    if (this.hasLoginChallengeStore()) {
+      const { count } = await this.prisma.otpChallenge.deleteMany({ where: { phone } });
+      return count > 0;
+    }
+
+    return this.otpChallenges.delete(phone);
+  }
+
+  private async consumeRegistrationChallenge(phone: string): Promise<boolean> {
+    if (this.hasRegistrationChallengeStore()) {
+      const { count } = await this.prisma.registrationOtpChallenge.deleteMany({ where: { phone } });
+      return count > 0;
+    }
+
+    return this.registrationOtpChallenges.delete(phone);
+  }
+
+  private hasLoginChallengeStore(): boolean {
+    if (this.prisma.otpChallenge) {
+      return true;
+    }
+
+    this.warnAboutInMemoryChallenges();
+    return false;
+  }
+
+  private hasRegistrationChallengeStore(): boolean {
+    if (this.prisma.registrationOtpChallenge) {
+      return true;
+    }
+
+    this.warnAboutInMemoryChallenges();
+    return false;
+  }
+
+  /**
+   * Guards the in-memory fallback that only test doubles ever reach.
+   *
+   * A generated client always carries these delegates, so a miss at runtime means
+   * the client was generated before the challenge migration. Falling back
+   * silently would quietly restore the multi-instance failure the database
+   * storage exists to remove.
+   */
+  private warnAboutInMemoryChallenges(): void {
+    if (this.warnedAboutInMemoryChallenges) {
+      return;
+    }
+
+    this.warnedAboutInMemoryChallenges = true;
+    this.logger.warn(
+      'Prisma OTP challenge delegates are unavailable; OTP challenges are being held in process memory, which fails whenever more than one instance serves traffic.',
+    );
+  }
+
+  /**
    * Counts one wrong guess, and destroys the challenge once the ceiling is hit.
    *
    * Destroying it is the point: a brute force gets one challenge worth of
    * attempts, not an unlimited supply of fresh ones.
    */
   private spendVerificationAttempt(
-    challenges: Map<string, StoredOtpChallenge | RegistrationOtpChallenge>,
+    challenges: Map<string, StoredOtpChallenge>,
     key: string,
-    challenge: StoredOtpChallenge | RegistrationOtpChallenge,
+    challenge: StoredOtpChallenge,
   ): void {
     challenge.attempts += 1;
     if (challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT) {

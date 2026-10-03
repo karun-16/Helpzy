@@ -544,8 +544,44 @@ function buildProductionConfig(): AppConfig {
   };
 }
 
+/** Row shape of the two generated OTP challenge tables. */
+interface OtpChallengeRow {
+  phone: string;
+  code: string;
+  expiresAt: Date;
+  attempts: number;
+  userId?: string;
+  role?: string;
+}
+
+interface OtpChallengeDelegate {
+  upsert: jest.Mock;
+  findUnique: jest.Mock;
+  updateMany: jest.Mock;
+  deleteMany: jest.Mock;
+}
+
+interface PhoneArgs {
+  where: { phone: string };
+}
+
+interface UpsertArgs extends PhoneArgs {
+  create: Partial<OtpChallengeRow>;
+  update: Partial<OtpChallengeRow>;
+}
+
+interface IncrementArgs extends PhoneArgs {
+  data: { attempts: { increment: number } };
+}
+
+interface DeleteArgs {
+  where: { phone: string; attempts?: { gte: number } };
+}
+
 describe('Demo OTP (production mode)', () => {
   let app: INestApplication;
+  /** Every application booted here, so the multi-instance cases all get closed. */
+  const createdApps: INestApplication[] = [];
   let prisma: {
     user: {
       findUnique: jest.Mock;
@@ -560,12 +596,70 @@ describe('Demo OTP (production mode)', () => {
     service: { findFirst: jest.Mock };
     review: { findMany: jest.Mock };
     booking: { groupBy: jest.Mock };
+    otpChallenge: OtpChallengeDelegate;
+    registrationOtpChallenge: OtpChallengeDelegate;
   };
 
-  async function createProductionApp(config: AppConfig): Promise<{
+  function createOtpChallengeStore(): {
+    login: OtpChallengeDelegate;
+    registration: OtpChallengeDelegate;
+  } {
+    const build = (): OtpChallengeDelegate => {
+      const rows = new Map<string, OtpChallengeRow>();
+
+      return {
+        upsert: jest.fn((args: UpsertArgs) => {
+          const next: OtpChallengeRow = {
+            phone: args.where.phone,
+            code: args.update.code ?? args.create.code ?? '',
+            expiresAt: args.update.expiresAt ?? args.create.expiresAt ?? new Date(),
+            attempts: args.update.attempts ?? args.create.attempts ?? 0,
+            userId: args.update.userId ?? args.create.userId,
+            role: args.update.role ?? args.create.role,
+          };
+          rows.set(args.where.phone, next);
+          return Promise.resolve(next);
+        }),
+        findUnique: jest.fn((args: PhoneArgs) =>
+          Promise.resolve(rows.get(args.where.phone) ?? null),
+        ),
+        updateMany: jest.fn((args: IncrementArgs) => {
+          const existing = rows.get(args.where.phone);
+          if (!existing) {
+            return Promise.resolve({ count: 0 });
+          }
+
+          rows.set(args.where.phone, {
+            ...existing,
+            attempts: existing.attempts + args.data.attempts.increment,
+          });
+          return Promise.resolve({ count: 1 });
+        }),
+        deleteMany: jest.fn((args: DeleteArgs) => {
+          const existing = rows.get(args.where.phone);
+          const ceiling = args.where.attempts?.gte;
+
+          if (!existing || (ceiling !== undefined && existing.attempts < ceiling)) {
+            return Promise.resolve({ count: 0 });
+          }
+
+          rows.delete(args.where.phone);
+          return Promise.resolve({ count: 1 });
+        }),
+      };
+    };
+
+    return { login: build(), registration: build() };
+  }
+
+  async function createProductionApp(
+    config: AppConfig,
+    challengeStore?: { login: OtpChallengeDelegate; registration: OtpChallengeDelegate },
+  ): Promise<{
     app: INestApplication;
     prisma: typeof prisma;
   }> {
+    const store = challengeStore ?? createOtpChallengeStore();
     const prismaInstance = {
       user: {
         findUnique: jest.fn(),
@@ -580,6 +674,8 @@ describe('Demo OTP (production mode)', () => {
       service: { findFirst: jest.fn() },
       review: { findMany: jest.fn() },
       booking: { groupBy: jest.fn() },
+      otpChallenge: store.login,
+      registrationOtpChallenge: store.registration,
     };
 
     const transaction = {
@@ -603,6 +699,8 @@ describe('Demo OTP (production mode)', () => {
         service: prismaInstance.service,
         review: prismaInstance.review,
         booking: prismaInstance.booking,
+        otpChallenge: prismaInstance.otpChallenge,
+        registrationOtpChallenge: prismaInstance.registrationOtpChallenge,
       })
       .overrideProvider(APP_CONFIG)
       .useValue(config)
@@ -611,6 +709,7 @@ describe('Demo OTP (production mode)', () => {
     const nestApp = moduleRef.createNestApplication();
     configureApp(nestApp, config);
     await nestApp.init();
+    createdApps.push(nestApp);
 
     return { app: nestApp, prisma: prismaInstance };
   }
@@ -620,9 +719,7 @@ describe('Demo OTP (production mode)', () => {
   });
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
+    await Promise.all(createdApps.map((created) => created.close()));
   });
 
   it('returns the demo OTP in production when AUTH_DEMO_OTP_ENABLED is true', async () => {
@@ -826,5 +923,155 @@ describe('Demo OTP (production mode)', () => {
       .post('/api/v1/auth/request-otp')
       .send({ phone: '+919800000002' })
       .expect(429);
+  });
+
+  /**
+   * Regression coverage for the production report: an OTP was issued on one
+   * Render instance and rejected as invalid when the verification reached
+   * another one, because the challenge lived in per-process memory.
+   *
+   * Each case boots two independent Nest applications and gives them one shared
+   * challenge store, which is the shape a single database presents to a fleet of
+   * instances.
+   */
+  describe('shared challenge storage across application instances', () => {
+    const REGISTRATION_PHONE = '+919876543211';
+    const CUSTOMER = {
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    async function createInstancePair() {
+      const config = buildProductionConfig();
+      config.authDemoOtpEnabled = true;
+
+      const store = createOtpChallengeStore();
+      const first = await createProductionApp(config, store);
+      const second = await createProductionApp(config, store);
+
+      return { first, second };
+    }
+
+    it('accepts a registration OTP issued by a different instance', async () => {
+      const { first, second } = await createInstancePair();
+
+      first.prisma.user.findUnique.mockResolvedValue(null);
+      second.prisma.user.findUnique.mockResolvedValue(null);
+      second.prisma.user.create.mockResolvedValue({
+        id: 'new-customer-1',
+        email: null,
+        phone: REGISTRATION_PHONE,
+        fullName: 'New Customer',
+        role: 'CUSTOMER',
+        status: 'ACTIVE',
+        passwordHash: 'generated-hash',
+      });
+
+      const otpResponse = await request(first.app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone: REGISTRATION_PHONE, role: 'CUSTOMER' })
+        .expect(200);
+
+      const otp = otpResponse.body.data.otp;
+      expect(otp).toEqual(expect.any(String));
+
+      const verifyResponse = await request(second.app.getHttpServer())
+        .post('/api/v1/auth/register/verify-otp')
+        .send({ phone: REGISTRATION_PHONE, otp, role: 'CUSTOMER' })
+        .expect(200);
+
+      expect(verifyResponse.body.success).toBe(true);
+      expect(verifyResponse.body.data.user.phone).toBe(REGISTRATION_PHONE);
+    });
+
+    it('accepts a sign-in OTP issued by a different instance', async () => {
+      const { first, second } = await createInstancePair();
+
+      first.prisma.user.findUnique.mockResolvedValue(CUSTOMER);
+      second.prisma.user.findUnique.mockResolvedValue(CUSTOMER);
+
+      const otpResponse = await request(first.app.getHttpServer())
+        .post('/api/v1/auth/request-otp')
+        .send({ phone: CUSTOMER.phone })
+        .expect(200);
+
+      const otp = otpResponse.body.data.otp;
+      expect(otp).toEqual(expect.any(String));
+
+      const verifyResponse = await request(second.app.getHttpServer())
+        .post('/api/v1/auth/verify-otp')
+        .send({ phone: CUSTOMER.phone, otp })
+        .expect(200);
+
+      expect(verifyResponse.body.success).toBe(true);
+      expect(verifyResponse.body.data.user.id).toBe(CUSTOMER.id);
+    });
+
+    it('spends a code once, even when two instances race for it', async () => {
+      const { first, second } = await createInstancePair();
+
+      first.prisma.user.findUnique.mockResolvedValue(null);
+      second.prisma.user.findUnique.mockResolvedValue(null);
+      second.prisma.user.create.mockResolvedValue({
+        id: 'new-customer-1',
+        email: null,
+        phone: REGISTRATION_PHONE,
+        fullName: 'New Customer',
+        role: 'CUSTOMER',
+        status: 'ACTIVE',
+        passwordHash: 'generated-hash',
+      });
+
+      const otpResponse = await request(first.app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone: REGISTRATION_PHONE, role: 'CUSTOMER' })
+        .expect(200);
+
+      const otp = otpResponse.body.data.otp;
+
+      const [winner, loser] = await Promise.all([
+        request(second.app.getHttpServer())
+          .post('/api/v1/auth/register/verify-otp')
+          .send({ phone: REGISTRATION_PHONE, otp, role: 'CUSTOMER' }),
+        request(first.app.getHttpServer())
+          .post('/api/v1/auth/register/verify-otp')
+          .send({ phone: REGISTRATION_PHONE, otp, role: 'CUSTOMER' }),
+      ]);
+
+      expect([winner.status, loser.status].sort()).toEqual([200, 401]);
+    });
+
+    it('shares the wrong-attempt ceiling between instances', async () => {
+      const { first, second } = await createInstancePair();
+
+      first.prisma.user.findUnique.mockResolvedValue(CUSTOMER);
+      second.prisma.user.findUnique.mockResolvedValue(CUSTOMER);
+
+      const otpResponse = await request(first.app.getHttpServer())
+        .post('/api/v1/auth/request-otp')
+        .send({ phone: CUSTOMER.phone })
+        .expect(200);
+
+      const otp = otpResponse.body.data.otp;
+
+      for (let i = 0; i < 5; i++) {
+        await request(first.app.getHttpServer())
+          .post('/api/v1/auth/verify-otp')
+          .send({ phone: CUSTOMER.phone, otp: '000000' })
+          .expect(401);
+      }
+
+      await request(second.app.getHttpServer())
+        .post('/api/v1/auth/verify-otp')
+        .send({ phone: CUSTOMER.phone, otp })
+        .expect(401);
+    });
   });
 });

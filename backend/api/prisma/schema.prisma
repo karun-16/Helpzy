@@ -867,3 +867,29 @@ model AuditLog {
   @@index([createdAt])
   @@map("audit_logs")
 }
+
+model OtpChallenge {
+  id          String    @id @default(uuid()) @db.Uuid
+  phone       String    @unique
+  userId      String
+  code        String
+  expiresAt   DateTime  @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@map("otp_challenges")
+}
+
+model RegistrationOtpChallenge {
+  id          String    @id @default(uuid()) @db.Uuid
+  phone       String    @unique
+  role        String
+  code        String
+  expiresAt   DateTime  @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@map("registration_otp_challenges")
+}
