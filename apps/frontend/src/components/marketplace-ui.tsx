@@ -126,7 +126,9 @@ export function EmptyBlock({
  * data itself is missing.
  */
 function apiUnreachableMessage(): string {
-  const base = appConfig.apiBaseUrl;
+  // An empty base URL is the same-origin deployment, so name the origin rather
+  // than printing nothing between "at" and the full stop.
+  const base = appConfig.apiBaseUrl || globalThis.location?.origin || 'this origin';
   return (
     `Can't reach the HELPZY API at ${base}. ` +
     "Check that it is running and that this page's origin is listed in API_CORS_ORIGINS."

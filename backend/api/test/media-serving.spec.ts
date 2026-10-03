@@ -58,6 +58,9 @@ describe('public media mount', () => {
       mediaPublicBaseUrl: '/media',
       mediaUploadDir: publicRoot,
       privateMediaUploadDir: privateRoot,
+      // No web export here: this suite is about media, and an absent export must
+      // leave the media behaviour untouched.
+      webClientDir: join(publicRoot, 'no-web-export'),
       isProduction: false,
       host: '0.0.0.0',
       port: 4000,

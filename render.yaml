@@ -1,0 +1,79 @@
+# HELPZY - single-service deployment on Render.
+#
+# One web service hosts both the NestJS API and the built Expo web export, so the
+# browser loads the app from the API's own origin and every `/api/v1/...` call is
+# same-origin: no second service, no CORS, and no host to keep in sync.
+#
+# Database note: this blueprint does NOT create a database. Render's free
+# PostgreSQL expires after 30 days and has to be claimed in the dashboard, so the
+# connection string is a value you supply. `DATABASE_URL` and `AUTH_JWT_SECRET`
+# are marked `sync: false`, which makes Render prompt for them instead of storing
+# them here.
+#
+# Before the first deploy:
+#   1. Create the web service from this blueprint.
+#   2. Fill in DATABASE_URL and AUTH_JWT_SECRET when prompted.
+#   3. Set API_CORS_ORIGINS to this service's own URL (see below).
+#   4. Run `pnpm --filter @helpzy/api db:deploy` once, from a machine that can
+#      reach the database, to apply the migrations.
+#
+# MEDIA: the local media provider writes profile photos and verification documents
+# to disk, and Render's filesystem is ephemeral - they will not survive a restart.
+# See the storage blocker in the deployment notes before putting this in front of
+# real users.
+
+services:
+  - type: web
+    name: helpzy
+    runtime: node
+    plan: free
+    region: singapore
+
+    # `packageManager` in package.json pins pnpm 11.19.0; Corepack activates it so
+    # the committed pnpm-lock.yaml is used exactly as written.
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm build
+
+    startCommand: node backend/api/dist/main.js
+
+    # The API reads Render's PORT and binds 0.0.0.0 automatically in production.
+    healthCheckPath: /api/v1/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: TZ
+        value: Asia/Kolkata
+
+      # Same-origin API URL. Compiled into the web bundle at build time, so it has
+      # to be visible to `expo export` - which it is, because service-level
+      # environment variables are present for both build and run.
+      - key: EXPO_PUBLIC_API_BASE_URL
+        value: /
+
+      - key: API_GLOBAL_PREFIX
+        value: api/v1
+
+      # Single origin, so the only browser origin is the service's own URL.
+      # Replace <service-name> with the name above once Render has issued the
+      # hostname; a wildcard is rejected at start-up by design, because this API
+      # is credentialed.
+      - key: API_CORS_ORIGINS
+        value: https://<service-name>.onrender.com
+
+      # Absolute public base for stored media. Left as the relative default the
+      # API derives root-relative URLs from, which is correct only while the web
+      # client and the API share an origin - the arrangement above. Set an absolute
+      # URL (https://.../media) if the media is ever served from somewhere else.
+      - key: MEDIA_PUBLIC_BASE_URL
+        value: /media
+
+      # Supplied in the dashboard, never committed.
+      - key: DATABASE_URL
+        sync: false
+
+      - key: AUTH_JWT_SECRET
+        generateValue: true

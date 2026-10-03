@@ -52,17 +52,38 @@ export const appConfig = {
   mediaMaxBytes: extra.mediaMaxBytes ?? webEnv.mediaMaxBytes ?? 5 * 1024 * 1024,
 } as const;
 
+/**
+ * Origin a media URI without one is resolved against.
+ *
+ * When the API base is empty the deployment is same-origin, so the page's own
+ * origin is the correct base for a stored `/media/...` path. Native has no page
+ * origin, and there the base is never empty in the first place - a phone cannot
+ * share an origin with a server - so it falls through and the URI is used as
+ * stored.
+ */
+function mediaBaseUrl(): string | undefined {
+  if (appConfig.apiBaseUrl) return appConfig.apiBaseUrl;
+  const location = (globalThis as { location?: { origin?: string } }).location;
+  return typeof location?.origin === 'string' && location.origin.length > 0
+    ? location.origin
+    : undefined;
+}
+
 /** Resolve local API media URLs against the host this client actually uses. */
 export function resolveMediaUrl(uri: string): string {
   if (uri.startsWith('data:')) return uri;
+
+  const base = mediaBaseUrl();
   try {
-    const mediaUrl = new URL(uri, appConfig.apiBaseUrl);
-    const apiUrl = new URL(appConfig.apiBaseUrl);
-    const isLoopback = (hostname: string) =>
-      hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
-    if (isLoopback(mediaUrl.hostname) && !isLoopback(apiUrl.hostname)) {
-      mediaUrl.protocol = apiUrl.protocol;
-      mediaUrl.host = apiUrl.host;
+    const mediaUrl = base === undefined ? new URL(uri) : new URL(uri, base);
+    if (base !== undefined) {
+      const apiUrl = new URL(base);
+      const isLoopback = (hostname: string) =>
+        hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
+      if (isLoopback(mediaUrl.hostname) && !isLoopback(apiUrl.hostname)) {
+        mediaUrl.protocol = apiUrl.protocol;
+        mediaUrl.host = apiUrl.host;
+      }
     }
     return mediaUrl.toString();
   } catch {

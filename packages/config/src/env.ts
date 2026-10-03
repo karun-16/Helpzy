@@ -30,10 +30,26 @@ function readInt(env: PublicEnv, key: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/** Base URL of the HELPZY API, without a trailing slash. */
+/**
+ * Base URL of the HELPZY API, without a trailing slash.
+ *
+ * An empty string means *same origin as the page*, which is what a single-host
+ * production deployment needs: every request becomes a root-relative URL
+ * (`/api/v1/...`), so the browser sends it to the origin that served the app and
+ * no origin has to be guessed or configured. `/` and `.` are accepted as the
+ * explicit spelling of that choice, because an empty environment variable is
+ * indistinguishable from an unset one.
+ *
+ * Development keeps the absolute default, so `pnpm dev` is unchanged.
+ */
 export function resolveApiBaseUrl(env: PublicEnv): string {
-  const baseUrl = readString(env, 'EXPO_PUBLIC_API_BASE_URL') ?? DEFAULT_API_BASE_URL;
-  return baseUrl.replace(/\/+$/, '');
+  const configured = readString(env, 'EXPO_PUBLIC_API_BASE_URL');
+  if (configured === undefined) return DEFAULT_API_BASE_URL;
+
+  const trimmed = configured.trim();
+  if (trimmed === '/' || trimmed === '.') return '';
+
+  return trimmed.replace(/\/+$/, '');
 }
 
 /** Timeout applied to outgoing API requests, in milliseconds. */

@@ -20,6 +20,23 @@ describe('configuration', () => {
     );
   });
 
+  it('treats "/" as "same origin as the page" for a single-host deployment', () => {
+    /*
+     * An empty base turns every request into a root-relative `/api/v1/...` URL,
+     * so the browser sends it to the origin that served the app. `/` is the
+     * explicit spelling because an empty environment variable reads as unset.
+     */
+    expect(resolveApiBaseUrl({ EXPO_PUBLIC_API_BASE_URL: '/' })).toBe('');
+    expect(resolveApiBaseUrl({ EXPO_PUBLIC_API_BASE_URL: '.' })).toBe('');
+  });
+
+  it('keeps the loopback default when no base URL is configured', () => {
+    // Development must be unaffected: the Expo dev server and the API are on
+    // different ports, so there is no single origin to fall back to.
+    expect(resolveApiBaseUrl({})).toBe('http://localhost:4000');
+    expect(resolveApiBaseUrl({ EXPO_PUBLIC_API_BASE_URL: '' })).toBe('http://localhost:4000');
+  });
+
   it('strips surrounding slashes from the global prefix', () => {
     expect(resolveApiGlobalPrefix({ API_GLOBAL_PREFIX: '/api/v2/' })).toBe('api/v2');
   });

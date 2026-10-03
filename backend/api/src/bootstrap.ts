@@ -1,8 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import helmet from 'helmet';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, {
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
@@ -49,6 +54,8 @@ export function configureApp(app: INestApplication, config: AppConfig): INestApp
   raiseJsonBodyLimit(app, config);
 
   serveLocalMedia(app, config);
+
+  serveWebClient(app, config);
 
   return app;
 }
@@ -147,4 +154,89 @@ function serveLocalMedia(app: INestApplication, config: AppConfig): void {
       dotfiles: 'deny',
     }),
   );
+}
+
+/**
+ * Serves the built Expo web export from the same process as the API.
+ *
+ * A single-service deployment needs one origin: the browser loads the app from
+ * the API's own host and every `/api/v1/...` call is then same-origin, with no
+ * CORS negotiation and nothing to keep in sync between two services.
+ *
+ * Registered before Nest's router, so anything this mount does not claim reaches
+ * the controllers untouched. The API prefix and the media mount are excluded
+ * explicitly - without that, the history fallback would answer an unknown
+ * `/api/v1/...` path with `200` and the HTML shell, turning a real API 404 into
+ * an unexplained "unexpected response" inside the client.
+ */
+function serveWebClient(app: INestApplication, config: AppConfig): void {
+  /*
+   * Production only, and deliberately so.
+   *
+   * This mount changes what an unprefixed path means: `/health` stops being an
+   * API 404 and becomes a client-side route. That is exactly right for a
+   * single-host deployment, and exactly wrong everywhere else - a developer
+   * running `pnpm dev:api` should not see the API change behaviour because they
+   * happened to run `pnpm build:web` at some point, and the test suite asserts
+   * the API-only contract. Keying it to the environment keeps the web client a
+   * deployment concern instead of a side effect of a build artefact.
+   */
+  if (!config.isProduction) return;
+
+  // Configured away entirely: the mount is opt-out, not just opt-in.
+  if (!config.webClientDir) return;
+
+  const root = resolve(config.webClientDir);
+  const shell = join(root, 'index.html');
+
+  // A checkout that has never run the web build has no export to serve. Skipping
+  // the mount entirely is honest: the API behaves exactly as it always has,
+  // rather than answering `/` with a 404 that reads as a broken server.
+  if (!existsSync(shell)) return;
+
+  const apiPrefix = `/${config.globalPrefix.replace(/^\/+|\/+$/g, '')}`;
+  const mediaPrefix = config.mediaPublicBaseUrl.startsWith('/')
+    ? config.mediaPublicBaseUrl.replace(/\/+$/, '')
+    : '';
+
+  /*
+   * Path-segment aware on purpose: a plain `startsWith` would also claim
+   * `/mediaXyz`, and the prefix has to be matched up to a segment boundary so an
+   * unknown API route stays an API route.
+   */
+  const isReserved = (path: string): boolean => {
+    const matches = (prefix: string): boolean =>
+      prefix !== '' && (path === prefix || path.startsWith(`${prefix}/`));
+    return matches(apiPrefix) || matches(mediaPrefix);
+  };
+
+  const staticAssets: RequestHandler = express.static(root, {
+    // `index: false` hands `/` to the fallback below, so the shell is always
+    // served by one code path with one set of headers.
+    index: false,
+    /*
+     * Deliberately short. Expo content-hashes the bundles under `_expo/static`,
+     * but `index.html` and `favicon.ico` do not, and an immutable year-long
+     * cache on those would pin users to a stale shell after a deploy.
+     */
+    maxAge: '1h',
+    fallthrough: true,
+    dotfiles: 'deny',
+  });
+
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    if (isReserved(request.path)) return next();
+    return staticAssets(request, response, next);
+  });
+
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return next();
+    if (isReserved(request.path)) return next();
+
+    // Expo is exported with `output: 'single'`, so every client-side route is
+    // the same document and the router only ever runs in the browser.
+    response.sendFile(shell, (error) => {
+      if (error) next(error);
+    });
+  });
 }

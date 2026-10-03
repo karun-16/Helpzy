@@ -347,7 +347,25 @@ export class LocalMediaStorageProvider implements MediaStorageProvider {
       return `${base.replace(/\/+$/, '')}/${key}`;
     }
     const protocol = this.config.isProduction ? 'https' : 'http';
-    const host = this.config.host === '0.0.0.0' ? 'localhost' : this.config.host;
+    /*
+     * A wildcard bind address is not a public host name. In production the
+     * process listens on `0.0.0.0` so a platform proxy can reach it, and
+     * `https://localhost:<port>` would be stored on the user's profile as a
+     * permanently broken image. A root-relative URL is correct whenever the web
+     * client and the API share an origin, which is the single-service deployment
+     * this build is for. A deployment that serves the app from somewhere else
+     * sets `MEDIA_PUBLIC_BASE_URL` to its absolute URL above.
+     *
+     * Development keeps the loopback rewrite, because there the Expo dev server
+     * on :8081 is a different origin from the API on :4000 and the client
+     * rewrites loopback hosts onto its configured base.
+     */
+    const isWildcardHost = this.config.host === '0.0.0.0' || this.config.host === '::';
+    if (isWildcardHost && this.config.isProduction) {
+      return `${base.replace(/\/+$/, '')}/${key}`;
+    }
+
+    const host = isWildcardHost ? 'localhost' : this.config.host;
     return `${protocol}://${host}:${this.config.port}${base.replace(/\/+$/, '')}/${key}`;
   }
 

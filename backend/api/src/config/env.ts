@@ -23,7 +23,18 @@ export const envSchema = z
       .default('log')
       .describe('Minimum NestJS logger level.'),
 
+    /**
+     * Port the HTTP server binds to.
+     *
+     * Render (and most PaaS providers) inject `PORT` at runtime and route
+     * incoming traffic to exactly that port, so it has to win when it is
+     * present. `API_PORT` stays the fallback, which is what every local
+     * development machine uses - nothing there sets `PORT`.
+     */
+    PORT: z.coerce.number().int().min(1).max(65_535).optional(),
+
     API_PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
+
     API_HOST: z.string().min(1).default('0.0.0.0'),
 
     API_GLOBAL_PREFIX: z
@@ -83,6 +94,20 @@ export const envSchema = z
       .string()
       .default('private-uploads')
       .describe('Directory for private uploads such as verification documents.'),
+
+    /**
+     * Built Expo web export served by this process.
+     *
+     * Relative paths resolve against the repository root, which is where
+     * `expo export --output-dir dist` puts it. The mount is skipped entirely
+     * when the directory is absent, so a development checkout that has never run
+     * the web build simply has no static handler.
+     */
+    WEB_CLIENT_DIR: z
+      .string()
+      .default('apps/frontend/dist')
+      .describe('Built Expo web export served as static files with SPA history fallback.'),
+
     PAYMENT_ONLINE_API_KEY: z.string().optional(),
 
     /**
@@ -140,6 +165,8 @@ export interface AppConfig {
   mediaPublicBaseUrl: string;
   mediaMaxBytes: number;
   privateMediaUploadDir: string;
+  /** Built Expo web export. Absent in a checkout that has not built the app. */
+  webClientDir: string;
   /** Present only when a real online gateway is configured. */
   paymentOnlineProvider: string | undefined;
   paymentOnlineApiKey: string | undefined;
@@ -154,8 +181,14 @@ export function toAppConfig(env: Env): AppConfig {
     nodeEnv: env.NODE_ENV,
     isProduction: env.NODE_ENV === 'production',
     logLevel: env.LOG_LEVEL,
-    port: env.API_PORT,
-    host: env.API_HOST,
+    port: env.PORT ?? env.API_PORT,
+    /*
+     * A container is only reachable through every one of its interfaces, so
+     * production binds to `0.0.0.0` whatever `API_HOST` says. Left to the
+     * default it would also be correct locally, but honouring an explicit
+     * `API_HOST` in development is worth keeping.
+     */
+    host: env.NODE_ENV === 'production' ? '0.0.0.0' : env.API_HOST,
     globalPrefix: env.API_GLOBAL_PREFIX,
     corsOrigins: parseCsv(env.API_CORS_ORIGINS),
     databaseUrl: env.DATABASE_URL,
@@ -173,6 +206,8 @@ export function toAppConfig(env: Env): AppConfig {
       '..',
       env.PRIVATE_MEDIA_UPLOAD_DIR,
     ),
+    // Repository root, four levels up from `dist/config` or `src/config`.
+    webClientDir: resolve(resolve(__dirname, '../../../..'), env.WEB_CLIENT_DIR),
     paymentOnlineProvider: env.PAYMENT_ONLINE_PROVIDER,
     paymentOnlineApiKey: env.PAYMENT_ONLINE_API_KEY,
     // A development-only default so the sandbox gateway is usable out of the box.

@@ -14,7 +14,7 @@
     "dev:web": "pnpm --filter \"@helpzy/frontend\" dev",
     "dev:android": "pnpm --filter \"@helpzy/frontend\" dev:android",
     "dev:ios": "pnpm --filter \"@helpzy/frontend\" dev:ios",
-    "build": "pnpm --filter \"@helpzy/types\" --filter \"@helpzy/validation\" --filter \"@helpzy/config\" --filter \"@helpzy/api-client\" build && pnpm --filter \"@helpzy/api\" build && pnpm --filter \"@helpzy/frontend\" build",
+    "build": "pnpm --filter \"@helpzy/types\" --filter \"@helpzy/validation\" --filter \"@helpzy/config\" --filter \"@helpzy/api-client\" build && pnpm --filter \"@helpzy/api\" db:generate && pnpm --filter \"@helpzy/api\" build && pnpm --filter \"@helpzy/frontend\" build",
     "build:packages": "pnpm --filter \"./packages/**\" build",
     "build:api": "pnpm --filter \"@helpzy/api\" build",
     "build:web": "pnpm --filter \"@helpzy/frontend\" build:web",
