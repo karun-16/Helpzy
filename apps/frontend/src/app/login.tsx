@@ -9,6 +9,7 @@ import {
   readPendingAuthRedirect,
   writeAuthSession,
 } from '../lib/auth-session';
+import { describeOtpChallenge } from '../lib/demo-otp';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -18,6 +19,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<{ phone: string; otp?: string } | null>(null);
   const pendingAction = useRef<'requesting' | 'verifying' | null>(null);
+  const notice = challenge ? describeOtpChallenge(challenge.phone, challenge.otp) : null;
 
   const requestOtp = async () => {
     if (pendingAction.current) return;
@@ -102,16 +104,12 @@ export default function LoginScreen() {
           </Text>
         </Pressable>
 
-        {challenge ? (
+        {notice ? (
           <View className="mt-5 rounded-2xl border border-brand-100 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/40 p-4 dark:border-brand-900 dark:bg-brand-950/40">
-            <Text className="text-sm text-brand-800 dark:text-brand-200 dark:text-brand-200">
-              OTP sent to {challenge.phone}
+            <Text className="text-sm font-semibold text-brand-800 dark:text-brand-200">
+              {notice.headline}
             </Text>
-            {challenge.otp ? (
-              <Text className="mt-2 text-xs text-brand-700 dark:text-brand-300 dark:text-brand-300">
-                Demo OTP: {challenge.otp}
-              </Text>
-            ) : null}
+            <Text className="mt-2 text-xs text-brand-700 dark:text-brand-300">{notice.detail}</Text>
           </View>
         ) : null}
 

@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { api } from '@/lib/api';
 import { ApiError } from '@helpzy/api-client';
+import { describeOtpChallenge, describeOtpRequestOutcome } from '@/lib/demo-otp';
 import {
   buildDashboardRoute,
   clearPendingAuthRedirect,
@@ -25,6 +26,7 @@ export default function RegisterScreen() {
   const [otp, setOtp] = useState('');
   const [challenge, setChallenge] = useState<{ phone: string; otp?: string } | null>(null);
   const pendingAction = useRef<'requesting' | 'verifying' | null>(null);
+  const notice = challenge ? describeOtpChallenge(challenge.phone, challenge.otp) : null;
 
   const requestOtp = async () => {
     if (pendingAction.current) return;
@@ -33,7 +35,7 @@ export default function RegisterScreen() {
     try {
       const response = await api.auth.requestRegistrationOtp({ phone, role });
       setChallenge({ phone: response.phone, otp: response.otp });
-      setStatus('OTP sent. Use the demo code shown below.');
+      setStatus(describeOtpRequestOutcome(response.phone, response.otp));
     } catch (error) {
       setStatus(
         error instanceof ApiError && error.isNetworkError
@@ -123,16 +125,12 @@ export default function RegisterScreen() {
           </Text>
         </Pressable>
 
-        {challenge ? (
-          <View className="mt-5 rounded-2xl border border-brand-100 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/40 p-4">
-            <Text className="text-sm text-brand-800 dark:text-brand-200">
-              OTP sent to {challenge.phone}
+        {notice ? (
+          <View className="mt-5 rounded-2xl border border-brand-100 dark:border-brand-800 bg-brand-50 dark:border-brand-900/40 p-4">
+            <Text className="text-sm font-semibold text-brand-800 dark:text-brand-200">
+              {notice.headline}
             </Text>
-            {challenge.otp ? (
-              <Text className="mt-2 text-xs text-brand-700 dark:text-brand-300">
-                Demo OTP: {challenge.otp}
-              </Text>
-            ) : null}
+            <Text className="mt-2 text-xs text-brand-700 dark:text-brand-300">{notice.detail}</Text>
           </View>
         ) : null}
 

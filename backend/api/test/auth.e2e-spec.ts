@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { APP_CONFIG, type AppConfigRef } from '../src/config/app-config.token';
 import { PrismaService } from '../src/database/prisma.service';
+import type { AppConfig } from '../src/config/env';
 
 describe('Auth (e2e)', () => {
   let app: INestApplication;
@@ -511,5 +512,319 @@ describe('Auth (e2e)', () => {
       .expect(200);
 
     expect(mfaResponse.body.data.user.role).toBe('ADMIN');
+  });
+});
+
+function buildProductionConfig(): AppConfig {
+  return {
+    nodeEnv: 'production',
+    isProduction: true,
+    logLevel: 'log',
+    port: 4000,
+    host: '0.0.0.0',
+    globalPrefix: 'api/v1',
+    corsOrigins: ['http://localhost:8081'],
+    databaseUrl: undefined,
+    authJwtSecret: 'a'.repeat(32),
+    authTokenTtlSeconds: 86_400,
+    otpTtlSeconds: 300,
+    mfaTtlSeconds: 300,
+    authDemoOtpEnabled: false,
+    mediaUploadDir: '/tmp/helpzy-uploads',
+    mediaPublicBaseUrl: '/media',
+    mediaMaxBytes: 5 * 1024 * 1024,
+    privateMediaUploadDir: '/tmp/helpzy-private-uploads',
+    webClientDir: '',
+    paymentOnlineProvider: undefined,
+    paymentOnlineApiKey: undefined,
+    paymentWebhookSecret: '',
+    paymentSandboxCheckoutBaseUrl: 'http://localhost:4000/api/v1/payments/sandbox/checkout',
+    locationStaleMinutes: 15,
+    timezone: 'Asia/Kolkata',
+  };
+}
+
+describe('Demo OTP (production mode)', () => {
+  let app: INestApplication;
+  let prisma: {
+    user: {
+      findUnique: jest.Mock;
+      findFirst: jest.Mock;
+      findMany: jest.Mock;
+      create: jest.Mock;
+      update: jest.Mock;
+    };
+    customerProfile: { create: jest.Mock };
+    professionalProfile: { create: jest.Mock; findMany: jest.Mock };
+    serviceCategory: { findMany: jest.Mock };
+    service: { findFirst: jest.Mock };
+    review: { findMany: jest.Mock };
+    booking: { groupBy: jest.Mock };
+  };
+
+  async function createProductionApp(config: AppConfig): Promise<{
+    app: INestApplication;
+    prisma: typeof prisma;
+  }> {
+    const prismaInstance = {
+      user: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      customerProfile: { create: jest.fn() },
+      professionalProfile: { create: jest.fn(), findMany: jest.fn() },
+      serviceCategory: { findMany: jest.fn() },
+      service: { findFirst: jest.fn() },
+      review: { findMany: jest.fn() },
+      booking: { groupBy: jest.fn() },
+    };
+
+    const transaction = {
+      user: prismaInstance.user,
+      customerProfile: prismaInstance.customerProfile,
+      professionalProfile: prismaInstance.professionalProfile,
+    };
+
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(PrismaService)
+      .useValue({
+        $connect: jest.fn().mockResolvedValue(undefined),
+        $disconnect: jest.fn().mockResolvedValue(undefined),
+        $transaction: jest.fn((operation: (tx: typeof transaction) => Promise<unknown>) =>
+          operation(transaction),
+        ),
+        user: prismaInstance.user,
+        customerProfile: prismaInstance.customerProfile,
+        professionalProfile: prismaInstance.professionalProfile,
+        serviceCategory: prismaInstance.serviceCategory,
+        service: prismaInstance.service,
+        review: prismaInstance.review,
+        booking: prismaInstance.booking,
+      })
+      .overrideProvider(APP_CONFIG)
+      .useValue(config)
+      .compile();
+
+    const nestApp = moduleRef.createNestApplication();
+    configureApp(nestApp, config);
+    await nestApp.init();
+
+    return { app: nestApp, prisma: prismaInstance };
+  }
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    if (app) {
+      await app.close();
+    }
+  });
+
+  it('returns the demo OTP in production when AUTH_DEMO_OTP_ENABLED is true', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = true;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/request-otp')
+      .send({ phone: '+919800000002' })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.status).toBe('OTP_SENT');
+    expect(response.body.data.otp).toEqual(expect.any(String));
+    expect(response.body.data.otp).toHaveLength(6);
+  });
+
+  it('does not return the demo OTP in production when AUTH_DEMO_OTP_ENABLED is false', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = false;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/request-otp')
+      .send({ phone: '+919800000002' })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.status).toBe('OTP_SENT');
+    expect(response.body.data.otp).toBeUndefined();
+  });
+
+  it('returns the demo registration OTP in production when enabled', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = true;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.create.mockResolvedValue({
+      id: 'new-customer-1',
+      email: null,
+      phone: '+919876543210',
+      fullName: 'New Customer',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'generated-hash',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/register/request-otp')
+      .send({ phone: '+919876543210', role: 'CUSTOMER' })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.status).toBe('OTP_SENT');
+    expect(response.body.data.otp).toEqual(expect.any(String));
+    expect(response.body.data.otp).toHaveLength(6);
+  });
+
+  it('does not return the demo registration OTP in production when disabled', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = false;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue(null);
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/register/request-otp')
+      .send({ phone: '+919876543210', role: 'CUSTOMER' })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.status).toBe('OTP_SENT');
+    expect(response.body.data.otp).toBeUndefined();
+  });
+
+  it('rejects verification after too many wrong attempts', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = true;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const otpResponse = await request(app.getHttpServer())
+      .post('/api/v1/auth/request-otp')
+      .send({ phone: '+919800000002' })
+      .expect(200);
+
+    const wrongOtp = '000000';
+    for (let i = 0; i < 5; i++) {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-otp')
+        .send({ phone: '+919800000002', otp: wrongOtp })
+        .expect(401);
+    }
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/verify-otp')
+      .send({ phone: '+919800000002', otp: otpResponse.body.data.otp })
+      .expect(401);
+  });
+
+  it('rejects an expired OTP in production', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = true;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const originalNow = Date.now();
+    let currentNow = originalNow;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentNow);
+
+    try {
+      const otpResponse = await request(app.getHttpServer())
+        .post('/api/v1/auth/request-otp')
+        .send({ phone: '+919800000002' })
+        .expect(200);
+
+      currentNow += config.otpTtlSeconds * 1000 + 1;
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-otp')
+        .send({ phone: '+919800000002', otp: otpResponse.body.data.otp })
+        .expect(401);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('throttles excessive OTP requests from the same phone number', async () => {
+    const config = buildProductionConfig();
+    config.authDemoOtpEnabled = true;
+    ({ app, prisma } = await createProductionApp(config));
+
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'customer-1',
+      email: 'customer@helpzy.test',
+      phone: '+919800000002',
+      fullName: 'Rahul Verma',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
+      passwordHash: 'hashed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/request-otp')
+        .send({ phone: '+919800000002' })
+        .expect(200);
+    }
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/request-otp')
+      .send({ phone: '+919800000002' })
+      .expect(429);
   });
 });

@@ -3,6 +3,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -37,6 +39,8 @@ interface StoredOtpChallenge {
   userId: string;
   code: string;
   expiresAt: number;
+  /** Wrong codes already spent on this challenge. */
+  attempts: number;
 }
 
 interface RegistrationOtpChallenge {
@@ -44,7 +48,27 @@ interface RegistrationOtpChallenge {
   role: 'CUSTOMER' | 'PROFESSIONAL';
   code: string;
   expiresAt: number;
+  /** Wrong codes already spent on this challenge. */
+  attempts: number;
 }
+
+/**
+ * OTP requests allowed for one phone number inside {@link OTP_REQUEST_WINDOW_MS}.
+ *
+ * Both request endpoints share this budget because they target the same number:
+ * an attacker must not be able to alternate between sign-in and registration to
+ * double the codes they can draw.
+ */
+const OTP_REQUEST_LIMIT = 3;
+const OTP_REQUEST_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * Wrong codes a single challenge tolerates before it is destroyed.
+ *
+ * A six digit code has a million combinations, so without a ceiling a leaked or
+ * demo-visible code could be brute forced through the verify endpoint.
+ */
+const OTP_VERIFY_ATTEMPT_LIMIT = 5;
 
 interface UserRecord {
   id: string;
@@ -94,6 +118,8 @@ export class AuthService {
   private readonly otpChallenges = new Map<string, StoredOtpChallenge>();
   private readonly registrationOtpChallenges = new Map<string, RegistrationOtpChallenge>();
   private readonly mfaChallenges = new Map<string, StoredOtpChallenge>();
+  /** Timestamps of recent OTP requests, keyed by normalised phone number. */
+  private readonly otpRequests = new Map<string, number[]>();
 
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfigRef,
@@ -107,6 +133,7 @@ export class AuthService {
     otp?: string;
   }> {
     const normalizedPhone = this.normalizePhone(phone);
+    this.assertOtpRequestAllowed(normalizedPhone);
     const user = await this.findUserByPhone(normalizedPhone);
 
     if (!user) {
@@ -124,13 +151,14 @@ export class AuthService {
       userId: user.id,
       code,
       expiresAt,
+      attempts: 0,
     });
 
     return {
       phone: normalizedPhone,
       status: 'OTP_SENT',
       expiresInSeconds: this.config.otpTtlSeconds,
-      ...(this.config.nodeEnv !== 'production' ? { otp: code } : {}),
+      ...(this.canRevealOtp() ? { otp: code } : {}),
     };
   }
 
@@ -144,6 +172,7 @@ export class AuthService {
     otp?: string;
   }> {
     const normalizedPhone = this.normalizePhone(phone);
+    this.assertOtpRequestAllowed(normalizedPhone);
     if (await this.findUserByPhone(normalizedPhone)) {
       throw this.existingAccountException();
     }
@@ -154,13 +183,14 @@ export class AuthService {
       role,
       code,
       expiresAt: Date.now() + this.config.otpTtlSeconds * 1000,
+      attempts: 0,
     });
 
     return {
       phone: normalizedPhone,
       status: 'OTP_SENT',
       expiresInSeconds: this.config.otpTtlSeconds,
-      ...(this.config.nodeEnv !== 'production' ? { otp: code } : {}),
+      ...(this.canRevealOtp() ? { otp: code } : {}),
     };
   }
 
@@ -176,12 +206,20 @@ export class AuthService {
       !challenge ||
       challenge.expiresAt < Date.now() ||
       challenge.role !== role ||
-      challenge.code !== String(otp).trim()
+      challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT
     ) {
       throw new UnauthorizedException({
         code: API_ERROR_CODES.OTP_INVALID,
         message:
           'The registration OTP is invalid or has expired. Request a new code and try again.',
+      });
+    }
+
+    if (challenge.code !== String(otp).trim()) {
+      this.spendVerificationAttempt(this.registrationOtpChallenges, normalizedPhone, challenge);
+      throw new UnauthorizedException({
+        code: API_ERROR_CODES.OTP_INVALID,
+        message: 'The registration OTP is incorrect. Check the code and try again.',
       });
     }
 
@@ -241,7 +279,11 @@ export class AuthService {
     const normalizedPhone = this.normalizePhone(phone);
     const challenge = this.otpChallenges.get(normalizedPhone);
 
-    if (!challenge || challenge.expiresAt < Date.now()) {
+    if (
+      !challenge ||
+      challenge.expiresAt < Date.now() ||
+      challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT
+    ) {
       throw new UnauthorizedException({
         code: API_ERROR_CODES.OTP_INVALID,
         message: 'The OTP is invalid or has expired.',
@@ -250,6 +292,7 @@ export class AuthService {
 
     const trimmedOtp = String(otp).trim();
     if (challenge.code !== trimmedOtp) {
+      this.spendVerificationAttempt(this.otpChallenges, normalizedPhone, challenge);
       throw new UnauthorizedException({
         code: API_ERROR_CODES.OTP_INVALID,
         message: 'The OTP code does not match the one that was sent.',
@@ -274,6 +317,7 @@ export class AuthService {
         userId: user.id,
         code: adminMfaCode,
         expiresAt: Date.now() + this.config.mfaTtlSeconds * 1000,
+        attempts: 0,
       });
     }
 
@@ -292,7 +336,12 @@ export class AuthService {
     }
 
     const challenge = this.mfaChallenges.get(authUser.phone);
-    if (!challenge || challenge.userId !== authUser.sub || challenge.expiresAt < Date.now()) {
+    if (
+      !challenge ||
+      challenge.userId !== authUser.sub ||
+      challenge.expiresAt < Date.now() ||
+      challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT
+    ) {
       throw new UnauthorizedException({
         code: API_ERROR_CODES.MFA_INVALID,
         message: 'The MFA code is invalid or has expired.',
@@ -302,6 +351,7 @@ export class AuthService {
     const expectedCode = challenge.code;
 
     if (expectedCode !== String(code).trim()) {
+      this.spendVerificationAttempt(this.mfaChallenges, authUser.phone, challenge);
       throw new UnauthorizedException({
         code: API_ERROR_CODES.MFA_INVALID,
         message: 'The MFA code does not match the one that was issued.',
@@ -394,6 +444,64 @@ export class AuthService {
 
   private createOtpCode(): string {
     return String(randomInt(0, 1_000_000)).padStart(6, '0');
+  }
+
+  /**
+   * Whether a generated code may travel back in the API response.
+   *
+   * Development always shows the code, which is what makes local work possible
+   * with no provider configured. Production reveals nothing unless an operator
+   * turns the demo flag on, so a real deployment cannot leak codes by accident -
+   * and because the flag defaults to off, forgetting to configure it fails closed
+   * rather than open.
+   *
+   * The code is never written to a log; the response body is the only channel.
+   */
+  private canRevealOtp(): boolean {
+    return this.config.nodeEnv !== 'production' || this.config.authDemoOtpEnabled;
+  }
+
+  /** Records a request and refuses the caller once the window budget is spent. */
+  private assertOtpRequestAllowed(phone: string): void {
+    const now = Date.now();
+    const recent = (this.otpRequests.get(phone) ?? []).filter(
+      (timestamp) => now - timestamp < OTP_REQUEST_WINDOW_MS,
+    );
+
+    if (recent.length >= OTP_REQUEST_LIMIT) {
+      // Keep the timestamps so the caller is still refused until the window
+      // genuinely rolls over, rather than resetting the budget on every attempt.
+      this.otpRequests.set(phone, recent);
+      throw new HttpException(
+        {
+          code: API_ERROR_CODES.TOO_MANY_REQUESTS,
+          message: `Too many OTP requests. Try again in ${Math.ceil(
+            (OTP_REQUEST_WINDOW_MS - (now - recent[0]!)) / 60_000,
+          )} minute(s).`,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    recent.push(now);
+    this.otpRequests.set(phone, recent);
+  }
+
+  /**
+   * Counts one wrong guess, and destroys the challenge once the ceiling is hit.
+   *
+   * Destroying it is the point: a brute force gets one challenge worth of
+   * attempts, not an unlimited supply of fresh ones.
+   */
+  private spendVerificationAttempt(
+    challenges: Map<string, StoredOtpChallenge | RegistrationOtpChallenge>,
+    key: string,
+    challenge: StoredOtpChallenge | RegistrationOtpChallenge,
+  ): void {
+    challenge.attempts += 1;
+    if (challenge.attempts >= OTP_VERIFY_ATTEMPT_LIMIT) {
+      challenges.delete(key);
+    }
   }
 
   private createSessionResponse(user: UserRecord): {

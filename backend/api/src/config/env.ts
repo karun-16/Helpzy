@@ -61,6 +61,21 @@ export const envSchema = z
     OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
     MFA_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
 
+    /**
+     * Return a generated OTP in the API response so a demo deployment can be used
+     * without an SMS or email provider.
+     *
+     * Off unless the operator asks for it, and compared against the exact string
+     * `'true'` rather than coerced, so `AUTH_DEMO_OTP_ENABLED=false` and any
+     * other value leaves it off instead of being read as truthy. Development
+     * already reveals codes and is unaffected by this flag.
+     */
+    AUTH_DEMO_OTP_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true')
+      .describe('Include the generated OTP in the response, for demo deployments.'),
+
     MEDIA_UPLOAD_DIR: z
       .string()
       .default('uploads')
@@ -161,6 +176,8 @@ export interface AppConfig {
   authTokenTtlSeconds: number;
   otpTtlSeconds: number;
   mfaTtlSeconds: number;
+  /** Reveal generated OTPs in responses, for demo deployments only. */
+  authDemoOtpEnabled: boolean;
   mediaUploadDir: string;
   mediaPublicBaseUrl: string;
   mediaMaxBytes: number;
@@ -196,6 +213,7 @@ export function toAppConfig(env: Env): AppConfig {
     authTokenTtlSeconds: env.AUTH_TOKEN_TTL_SECONDS,
     otpTtlSeconds: env.OTP_TTL_SECONDS,
     mfaTtlSeconds: env.MFA_TTL_SECONDS,
+    authDemoOtpEnabled: env.AUTH_DEMO_OTP_ENABLED,
     mediaUploadDir: resolve(resolve(__dirname, '../..'), env.MEDIA_UPLOAD_DIR),
     mediaPublicBaseUrl: env.MEDIA_PUBLIC_BASE_URL,
     mediaMaxBytes: env.MEDIA_MAX_BYTES,

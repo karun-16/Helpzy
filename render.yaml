@@ -84,3 +84,9 @@ services:
 
       - key: AUTH_JWT_SECRET
         generateValue: true
+
+      # Demo OTP: include the generated code in the API response so the deployed
+      # project demo works without an SMS or email provider. Keep it false here
+      # and enable it explicitly in the Render dashboard for the demo.
+      - key: AUTH_DEMO_OTP_ENABLED
+        value: false
