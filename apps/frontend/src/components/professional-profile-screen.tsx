@@ -14,7 +14,6 @@ import {
   RoleScreen,
   ScreenShell,
   SectionHeading,
-  ThemeControl,
 } from '@/components/marketplace-ui';
 import { ProfilePhotoEditor } from '@/components/profile-photo-editor';
 import { VerifiedBadge } from '@/components/ui';
@@ -255,13 +254,18 @@ export function ProfessionalProfileScreen() {
                 avatarUrl={profile.avatarUrl}
                 displayName={profile.fullName}
                 onUpload={api.professionalProfile.uploadPhoto}
-                onUploaded={(avatarUrl) => {
+                onUploaded={async () => {
+                  const refreshed = await api.professionalProfile.getOwn();
                   setResult({
                     request: reload,
-                    data: { ...profile, avatarUrl },
+                    data: refreshed,
                     error: false,
                   });
-                  patchAuthSessionUser({ avatarUrl });
+                  patchAuthSessionUser({
+                    avatarUrl: refreshed.avatarUrl,
+                    fullName: refreshed.fullName,
+                    email: refreshed.email ?? undefined,
+                  });
                 }}
               />
               <LabelledInput label="Your name" value={fullName} onChangeText={setFullName} />
@@ -376,10 +380,6 @@ export function ProfessionalProfileScreen() {
                   being shown a stale position.
                 </Text>
               )}
-            </Panel>
-
-            <Panel title="Preferences" subtitle="These preferences are stored on this device.">
-              <ThemeControl />
             </Panel>
 
             <ActionButton label="Save profile" onPress={save} busy={saving} />

@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { API_ERROR_CODES, ROLES } from '@helpzy/types';
+import { markCompletedSchema } from '@helpzy/validation';
 
 import { AuthGuard, type RequestWithUser } from '../auth/auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -81,4 +82,38 @@ export class ProfessionalBookingsController {
     }
     return this.bookingsService.advance(request.user!.id, bookingId, action);
   }
+
+  /**
+   * The professional's half of mutual completion.
+   *
+   * The first confirmation from either party only records agreement; the booking
+   * becomes complete once both have confirmed.
+   */
+  @Post(':bookingId/complete')
+  complete(
+    @Req() request: RequestWithUser,
+    @Param('bookingId') bookingId: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = markCompletedSchema.safeParse(body ?? {});
+    if (!parsed.success) throw validationFailure(parsed.error.issues);
+    return this.bookingsService.markCompleted(request.user!.id, bookingId, parsed.data.note);
+  }
+
+  /** Who has confirmed completion, and whether the professional still owes theirs. */
+  @Get(':bookingId/completion')
+  completion(@Req() request: RequestWithUser, @Param('bookingId') bookingId: string) {
+    return this.bookingsService.completionState(request.user!.id, bookingId);
+  }
+}
+
+function validationFailure(issues: readonly { path: PropertyKey[]; message: string }[]) {
+  return new BadRequestException({
+    code: API_ERROR_CODES.VALIDATION_FAILED,
+    message: 'Please check the details and try again.',
+    details: issues.map((issue) => ({
+      field: issue.path.join('.') || '(root)',
+      messages: [issue.message],
+    })),
+  });
 }

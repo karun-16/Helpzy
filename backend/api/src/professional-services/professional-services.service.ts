@@ -1,5 +1,9 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { API_ERROR_CODES } from '@helpzy/types';
+import {
+  API_ERROR_CODES,
+  SERVICE_MODERATION_STATUSES,
+  type ServiceModerationStatus,
+} from '@helpzy/types';
 import type {
   CreateProfessionalServiceDto,
   ProfessionalCategoryOptionDto,
@@ -8,6 +12,7 @@ import type {
 } from '@helpzy/validation';
 
 import { PrismaService } from '../database/prisma.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 /**
  * The services a professional offers.
@@ -22,7 +27,10 @@ import { PrismaService } from '../database/prisma.service';
  */
 @Injectable()
 export class ProfessionalServicesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: PlatformSettingsService,
+  ) {}
 
   /**
    * The categories a professional may publish under.
@@ -65,6 +73,15 @@ export class ProfessionalServicesService {
     input: CreateProfessionalServiceDto,
   ): Promise<ProfessionalServiceRecordDto> {
     await this.profileOrThrow(userId);
+    await this.settings.assertNotBlocked('CREATE_SERVICE');
+
+    // Duration and price bounds are platform settings. They can only tighten the
+    // per-field limits the request schema already enforced, so no setting can make
+    // the API accept something the schema refuses.
+    await this.settings.assertServiceWithinLimits({
+      durationMinutes: input.durationMinutes,
+      priceAmount: input.priceAmount,
+    });
 
     const category = await this.prisma.serviceCategory.findUnique({
       where: { id: input.categoryId },
@@ -83,6 +100,11 @@ export class ProfessionalServicesService {
     const base = slugify(input.title);
     const slug = await this.uniqueSlug(base);
 
+    // A listing the platform moderates starts hidden and pending; one
+    // published freely starts live and approved. Both facts are set
+    // together so the two can never disagree about a new listing.
+    const requiresModeration = await this.settings.requiresModerationBeforePublish();
+
     const service = await this.prisma.service.create({
       data: {
         ownerId: userId,
@@ -94,6 +116,16 @@ export class ProfessionalServicesService {
         basePrice: input.priceAmount,
         currency: input.currency.toUpperCase(),
         durationMinutes: input.durationMinutes,
+        /*
+         * When the platform requires moderation, a new listing is created
+         * inactive so it cannot appear in discovery until an admin approves it.
+         * The professional still gets a record back - it is their listing, and
+         * hiding it from them would be more confusing than showing it as pending.
+         */
+        isActive: !requiresModeration,
+        moderationStatus: requiresModeration
+          ? SERVICE_MODERATION_STATUSES.PENDING
+          : SERVICE_MODERATION_STATUSES.APPROVED,
       },
       include: {
         category: { select: { id: true, slug: true, name: true, isActive: true } },
@@ -115,9 +147,45 @@ export class ProfessionalServicesService {
     // return a clear message for the common "I have history here" case.
     const existing = await this.prisma.service.findFirst({
       where: { id: serviceId, ownerId: userId },
-      select: { id: true, _count: { select: { bookings: true } } },
+      select: {
+        id: true,
+        moderationStatus: true,
+        _count: { select: { bookings: true } },
+      },
     });
     if (!existing) throw serviceNotFound();
+
+    /*
+     * Activation is the moderator's decision. A listing that is still
+     * awaiting review, or one an admin has withdrawn, cannot be switched
+     * live by the professional who owns it - that would let anyone publish
+     * straight past the moderation the platform asked for. Editing the
+     * listing's content is still allowed, and hiding an approved listing
+     * is still allowed.
+     */
+    if (
+      input.isActive === true &&
+      existing.moderationStatus !== SERVICE_MODERATION_STATUSES.APPROVED
+    ) {
+      throw new ConflictException({
+        code: API_ERROR_CODES.CONFLICT,
+        message:
+          existing.moderationStatus === SERVICE_MODERATION_STATUSES.PENDING
+            ? 'This listing is waiting for review and cannot be activated yet.'
+            : 'This listing was withdrawn, so it cannot be activated again.',
+      });
+    }
+
+    /*
+     * Only the fields actually changing are checked, so a professional editing
+     * just the description of a service that predates a tightened price rule is not
+     * blocked by it. An existing listing is never invalidated by a later settings
+     * change; the rule governs what may be published from now on.
+     */
+    await this.settings.assertServiceWithinLimits({
+      durationMinutes: input.durationMinutes,
+      priceAmount: input.priceAmount,
+    });
 
     const updated = await this.prisma.service.update({
       where: { id: serviceId },
@@ -210,6 +278,8 @@ export class ProfessionalServicesService {
     currency: string;
     durationMinutes: number;
     isActive: boolean;
+    moderationStatus: string;
+    moderationNote: string | null;
     category: { id: string; slug: string; name: string };
     _count: { bookings: number };
   }): ProfessionalServiceRecordDto {
@@ -223,6 +293,10 @@ export class ProfessionalServicesService {
       currency: service.currency,
       durationMinutes: service.durationMinutes,
       isActive: service.isActive,
+      moderationStatus: service.moderationStatus as ServiceModerationStatus,
+      // Only set while an admin has withdrawn the listing; the professional's own
+      // hide toggle leaves it null so the two are never confused.
+      moderationNote: service.moderationNote,
       category: {
         id: service.category.id,
         slug: service.category.slug,

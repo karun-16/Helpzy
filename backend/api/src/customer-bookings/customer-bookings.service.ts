@@ -9,6 +9,7 @@ import { API_ERROR_CODES, NOTIFICATION_TYPES, ROLES, type BookingStatus } from '
 import {
   createCustomerBookingSchema,
   type BookingTimelineEntryDto,
+  type CompletionStateDto,
   type CustomerBookingDto,
 } from '@helpzy/validation';
 import type { Prisma } from '@prisma/client';
@@ -16,16 +17,18 @@ import type { Prisma } from '@prisma/client';
 import { BookingLifecycleService } from '../bookings/booking-lifecycle.service';
 import { PrismaService } from '../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 const bookingInclude = {
   service: { select: { id: true, title: true } },
   professional: {
     select: {
       id: true,
-      user: { select: { fullName: true } },
+      user: { select: { id: true, fullName: true } },
       businessName: true,
     },
   },
+  review: { select: { id: true } },
   address: {
     select: {
       label: true,
@@ -46,6 +49,7 @@ export class CustomerBookingsService {
     private readonly prisma: PrismaService,
     private readonly lifecycle: BookingLifecycleService,
     private readonly notifications: NotificationsService,
+    private readonly settings: PlatformSettingsService,
   ) {}
 
   async create(customerId: string, input: unknown): Promise<CustomerBookingDto> {
@@ -62,12 +66,19 @@ export class CustomerBookingsService {
     }
 
     const scheduledStart = new Date(parsed.data.scheduledStart);
-    if (!Number.isFinite(scheduledStart.getTime()) || scheduledStart.getTime() <= Date.now()) {
+    if (!Number.isFinite(scheduledStart.getTime())) {
       throw new BadRequestException({
         code: API_ERROR_CODES.VALIDATION_FAILED,
         message: 'Choose a valid future date and time.',
       });
     }
+
+    // The lead time, the booking horizon and the open/closed switch are platform
+    // settings, so they are checked here rather than baked into the request
+    // schema. The schema still guarantees the value parses; only the policy is
+    // dynamic.
+    await this.settings.assertNotBlocked('CREATE_BOOKING');
+    await this.settings.assertBookableAt(scheduledStart);
 
     const customer = await this.prisma.user.findFirst({
       where: { id: customerId, role: ROLES.CUSTOMER, status: 'ACTIVE' },
@@ -278,9 +289,12 @@ export class CustomerBookingsService {
   }
 
   /**
-   * Confirms a booking the professional marked complete. The customer identity
-   * comes from the session and the booking is scoped to them, so neither
-   * `customerId` nor `professionalId` is ever accepted from the client.
+   * Confirms a booking the professional marked complete.
+   *
+   * This is the customer's half of mutual completion: the booking only reaches
+   * `CUSTOMER_CONFIRMED` once the professional has already confirmed. The
+   * identity comes from the session and the booking is scoped to the customer, so
+   * neither `customerId` nor `professionalId` is ever accepted from the client.
    */
   async confirmCompletion(customerId: string, bookingId: string): Promise<CustomerBookingDto> {
     await this.lifecycle.applyCustomerConfirmation({
@@ -302,6 +316,91 @@ export class CustomerBookingsService {
     return this.toDto(booking);
   }
 
+  /**
+   * The customer's half of mutual completion, recording who confirmed and when.
+   *
+   * Routed through the shared lifecycle so the ordering rule, the status history
+   * and the notification all behave exactly as for every other transition. A
+   * repeated confirmation is a no-op rather than an error.
+   */
+  async markCompleted(
+    customerId: string,
+    bookingId: string,
+    note?: string,
+  ): Promise<CompletionStateDto> {
+    await this.lifecycle.applyCompletionConfirmation({
+      bookingId,
+      actorUserId: customerId,
+      actorRole: ROLES.CUSTOMER,
+      ...(note !== undefined ? { note } : {}),
+    });
+    return this.completionState(customerId, bookingId);
+  }
+
+  /** Who has confirmed completion, and whose turn it is. */
+  async completionState(customerId: string, bookingId: string): Promise<CompletionStateDto> {
+    const booking = await this.prisma.booking.findFirst({
+      where: { id: bookingId, customerId },
+      select: {
+        id: true,
+        status: true,
+        completedByCustomerId: true,
+        completedByProfessionalAt: true,
+        completedByCustomerAt: true,
+        completedByProfessional: { select: { fullName: true } },
+        completedByCustomer: { select: { fullName: true } },
+      },
+    });
+    if (!booking) {
+      throw new NotFoundException({
+        code: API_ERROR_CODES.NOT_FOUND,
+        message: 'The requested booking was not found.',
+      });
+    }
+
+    const isComplete =
+      Boolean(booking.completedByProfessionalAt) && Boolean(booking.completedByCustomerAt);
+
+    return {
+      status: booking.status,
+      professionalConfirmedAt: booking.completedByProfessionalAt?.toISOString() ?? null,
+      professionalConfirmedByName: booking.completedByProfessional?.fullName ?? null,
+      customerConfirmedAt: booking.completedByCustomerAt?.toISOString() ?? null,
+      customerConfirmedByName: booking.completedByCustomer?.fullName ?? null,
+      isComplete,
+      // The viewer is the customer here, so only their own confirmation is theirs
+      // to give.
+      awaitingViewerConfirmation: !isComplete && booking.completedByCustomerId !== customerId,
+    };
+  }
+
+  async cancel(customerId: string, bookingId: string): Promise<CustomerBookingDto> {
+    await this.lifecycle.applyCustomerCancellation({
+      bookingId,
+      customerId,
+      actorUserId: customerId,
+    });
+    return this.get(customerId, bookingId);
+  }
+
+  /**
+   * Closes a paid booking the customer is satisfied with.
+   *
+   * The last step of the lifecycle: a booking stays open once payment has
+   * settled, and only the customer who holds it can close it, which is
+   * what the platform counts as the job wrapped up. Routed through the
+   * shared lifecycle so the ordering rule and the status history behave
+   * exactly as for every other transition.
+   */
+  async close(customerId: string, bookingId: string): Promise<CustomerBookingDto> {
+    await this.lifecycle.applyCustomerClose({
+      bookingId,
+      customerId,
+      actorUserId: customerId,
+    });
+    return this.get(customerId, bookingId);
+  }
+
   private toDto(booking: BookingRecord): CustomerBookingDto {
     return {
       id: booking.id,
@@ -312,11 +411,12 @@ export class CustomerBookingsService {
       requirement: booking.customerNote,
       service: booking.service,
       professional: {
-        id: booking.professional.id,
+        id: booking.professional.user.id,
         fullName: booking.professional.user.fullName,
         businessName: booking.professional.businessName,
       },
       location: booking.address,
+      reviewId: booking.review?.id ?? null,
     };
   }
 

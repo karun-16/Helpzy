@@ -20,6 +20,7 @@ import {
 import type {
   AdminAuditEntryDto,
   AdminDashboardSummaryDto,
+  AdminProfessionalDetailDto,
   AdminUserSummaryDto,
   AdminVerificationRequestDto,
 } from '@helpzy/validation';
@@ -114,12 +115,50 @@ export class AdminService {
   }
 
   async listUsers(
-    options: { role?: string; status?: string } = {},
+    options: { role?: string; status?: string; search?: string; categoryId?: string } = {},
   ): Promise<AdminUserSummaryDto[]> {
+    if (
+      options.role &&
+      !Object.values(ROLES).includes(options.role as (typeof ROLES)[keyof typeof ROLES])
+    ) {
+      throw new BadRequestException({
+        code: API_ERROR_CODES.VALIDATION_FAILED,
+        message: 'Choose a valid account role.',
+      });
+    }
+    if (options.status && !Object.values(USER_STATUSES).includes(options.status as UserStatus)) {
+      throw new BadRequestException({
+        code: API_ERROR_CODES.VALIDATION_FAILED,
+        message: 'Choose a valid account status.',
+      });
+    }
+    if (options.categoryId && !isUuid(options.categoryId)) {
+      throw new BadRequestException({
+        code: API_ERROR_CODES.VALIDATION_FAILED,
+        message: 'Choose a valid service category.',
+      });
+    }
+    const search = options.search?.trim().slice(0, 100);
     const users = await this.prisma.user.findMany({
       where: {
         ...(options.role ? { role: options.role as (typeof ROLES)[keyof typeof ROLES] } : {}),
         ...(options.status ? { status: options.status as UserStatus } : {}),
+        ...(search
+          ? {
+              OR: [
+                { fullName: { contains: search, mode: 'insensitive' } },
+                { phone: { contains: search, mode: 'insensitive' } },
+                { email: { contains: search, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+        ...(options.categoryId
+          ? {
+              services: {
+                some: { categoryId: options.categoryId, isActive: true },
+              },
+            }
+          : {}),
       },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -142,6 +181,220 @@ export class AdminService {
       role: user.role,
       status: user.status,
       createdAt: user.createdAt.toISOString(),
+    }));
+  }
+
+  async getProfessionalDetail(userId: string): Promise<AdminProfessionalDetailDto> {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, role: ROLES.PROFESSIONAL },
+      select: {
+        id: true,
+        fullName: true,
+        phone: true,
+        email: true,
+        avatarUrl: true,
+        status: true,
+        createdAt: true,
+        professionalProfile: {
+          select: {
+            id: true,
+            businessName: true,
+            bio: true,
+            serviceArea: true,
+            contactEmail: true,
+            isPhoneVisible: true,
+            yearsOfExperience: true,
+            verification: true,
+            verifiedAt: true,
+            rejectionNote: true,
+            createdAt: true,
+            completedCount: true,
+            averageRating: true,
+            ratingCount: true,
+          },
+        },
+        services: {
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            summary: true,
+            basePrice: true,
+            currency: true,
+            isActive: true,
+            category: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
+    });
+    if (!user?.professionalProfile) throw userNotFound();
+
+    const profile = user.professionalProfile;
+    const [bookings, reviews] = await Promise.all([
+      this.prisma.booking.findMany({
+        where: { professionalId: profile.id },
+        orderBy: { scheduledStart: 'desc' },
+        take: 50,
+        select: {
+          id: true,
+          reference: true,
+          status: true,
+          scheduledStart: true,
+          service: { select: { title: true } },
+          customer: { select: { fullName: true } },
+        },
+      }),
+      this.prisma.review.findMany({
+        where: { booking: { professionalId: profile.id } },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+        select: {
+          id: true,
+          rating: true,
+          comment: true,
+          status: true,
+          createdAt: true,
+          customer: { select: { fullName: true } },
+          booking: {
+            select: {
+              reference: true,
+              service: { select: { title: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      id: user.id,
+      profileId: profile.id,
+      fullName: user.fullName,
+      phone: user.phone ?? '',
+      email: user.email,
+      avatarUrl: user.avatarUrl,
+      accountStatus: user.status,
+      accountCreatedAt: user.createdAt.toISOString(),
+      businessName: profile.businessName,
+      bio: profile.bio,
+      serviceArea: profile.serviceArea,
+      contactEmail: profile.contactEmail,
+      isPhoneVisible: profile.isPhoneVisible,
+      yearsOfExperience: profile.yearsOfExperience,
+      verification: profile.verification,
+      verifiedAt: profile.verifiedAt?.toISOString() ?? null,
+      rejectionNote: profile.rejectionNote,
+      profileCreatedAt: profile.createdAt.toISOString(),
+      completedCount: profile.completedCount,
+      averageRating: Number(profile.averageRating),
+      ratingCount: profile.ratingCount,
+      services: user.services.map((service) => ({
+        id: service.id,
+        title: service.title,
+        description: service.description,
+        summary: service.summary,
+        price: Number(service.basePrice),
+        currency: service.currency,
+        active: service.isActive,
+        category: service.category,
+      })),
+      bookings: bookings.map((booking) => ({
+        id: booking.id,
+        reference: booking.reference,
+        status: booking.status,
+        scheduledStart: booking.scheduledStart.toISOString(),
+        serviceTitle: booking.service.title,
+        customerName: booking.customer.fullName,
+      })),
+      reviews: reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        comment: review.comment,
+        status: review.status,
+        createdAt: review.createdAt.toISOString(),
+        customerName: review.customer.fullName,
+        serviceTitle: review.booking.service?.title ?? '',
+        bookingReference: review.booking.reference,
+      })),
+    };
+  }
+
+  async listBookings(
+    filter: {
+      search?: string;
+      status?: string;
+      from?: string;
+      to?: string;
+    } = {},
+  ) {
+    const status = filter.status?.trim();
+    if (status && !Object.values(BOOKING_STATUSES).includes(status as BookingStatus)) {
+      throw new BadRequestException({
+        code: API_ERROR_CODES.VALIDATION_FAILED,
+        message: 'Choose a valid booking status.',
+      });
+    }
+    const from = parseFilterDate(filter.from, 'from');
+    const to = parseFilterDate(filter.to, 'to');
+    if (from && to && from > to) {
+      throw new BadRequestException({
+        code: API_ERROR_CODES.VALIDATION_FAILED,
+        message: 'The start date must be before the end date.',
+      });
+    }
+    const search = filter.search?.trim().slice(0, 100);
+    const bookings = await this.prisma.booking.findMany({
+      where: {
+        ...(status ? { status: status as BookingStatus } : {}),
+        ...(from || to
+          ? { scheduledStart: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+          : {}),
+        ...(search
+          ? {
+              OR: [
+                { reference: { contains: search, mode: 'insensitive' } },
+                { customer: { fullName: { contains: search, mode: 'insensitive' } } },
+                { professional: { user: { fullName: { contains: search, mode: 'insensitive' } } } },
+                { professional: { businessName: { contains: search, mode: 'insensitive' } } },
+                { service: { title: { contains: search, mode: 'insensitive' } } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ scheduledStart: 'desc' }, { createdAt: 'desc' }],
+      take: 100,
+      select: {
+        id: true,
+        reference: true,
+        status: true,
+        scheduledStart: true,
+        createdAt: true,
+        priceAmount: true,
+        currency: true,
+        service: { select: { title: true } },
+        customer: { select: { fullName: true } },
+        professional: {
+          select: { businessName: true, user: { select: { fullName: true } } },
+        },
+        payment: { select: { status: true } },
+        review: { select: { status: true } },
+      },
+    });
+    return bookings.map((booking) => ({
+      id: booking.id,
+      reference: booking.reference,
+      status: booking.status,
+      scheduledStart: booking.scheduledStart.toISOString(),
+      createdAt: booking.createdAt.toISOString(),
+      amount: Number(booking.priceAmount),
+      currency: booking.currency,
+      serviceTitle: booking.service.title,
+      customerName: booking.customer.fullName,
+      professionalName: booking.professional.user.fullName,
+      businessName: booking.professional.businessName,
+      paymentStatus: booking.payment?.status ?? null,
+      reviewStatus: booking.review?.status ?? null,
     }));
   }
 
@@ -437,6 +690,22 @@ export class AdminService {
       createdAt: user.createdAt.toISOString(),
     };
   }
+}
+
+function parseFilterDate(value: string | undefined, field: string): Date | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new BadRequestException({
+      code: API_ERROR_CODES.VALIDATION_FAILED,
+      message: `The ${field} date is invalid.`,
+    });
+  }
+  return parsed;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function userNotFound() {

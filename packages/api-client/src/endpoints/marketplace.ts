@@ -1,12 +1,23 @@
 import {
   adminAuditEntrySchema,
+  adminBookingDetailSchema,
+  adminCategoriesSchema,
+  adminCategorySchema,
+  adminBookingsSchema,
   adminDashboardSummarySchema,
+  disputeDetailSchema,
+  disputesSchema,
+  adminProfessionalDetailSchema,
+  adminServiceSchema,
+  adminServicesSchema,
   adminUserSummarySchema,
   adminVerificationDecisionSchema,
   adminVerificationRequestSchema,
   assignedProfessionalLocationSchema,
   bookingMessagesSchema,
   bookingPaymentSchema,
+  confirmCashPaymentSchema,
+  createCategorySchema,
   createProfessionalServiceSchema,
   customerAddressSchema,
   customerAddressesSchema,
@@ -21,18 +32,47 @@ import {
   professionalReviewsSchema,
   professionalServiceRecordSchema,
   professionalServicesSchema,
+  overrideBookingStatusSchema,
+  platformSettingsResponseSchema,
   recordDirectPaymentSchema,
+  refundBookingSchema,
+  updatePlatformSettingsSchema,
+  reportSchema,
+  reportsSchema,
+  resolveDisputeSchema,
+  resolveReportSchema,
   reviewSchema,
+  startReportReviewSchema,
   reviewsSchema,
   sendBookingMessageSchema,
   startPaymentSchema,
+  setCategoryStatusSchema,
+  setServiceStatusSchema,
+  updateCategorySchema,
   updateCustomerProfileSchema,
   updateProfessionalProfileSchema,
   updateProfessionalServiceSchema,
   upsertCustomerAddressSchema,
+  type AdminBookingDetailDto,
+  type AdminBookingDto,
+  type OverrideBookingStatusDto,
+  type ProfileImageContentType,
+  type RefundBookingDto,
+  type UpdatePlatformSettings,
+  type AdminCategoryDto,
+  type AdminProfessionalDetailDto,
+  type AdminServiceDto,
+  type CreateReportDto,
+  type DisputeDetailDto,
+  type DisputeDto,
+  type OpenDisputeDto,
+  type ReportDto,
+  type ResolveDisputeDto,
+  type ResolveReportDto,
   type AdminUserSummaryDto,
   type AdminVerificationRequestDto,
   type CreateProfessionalServiceDto,
+  type CreateCategoryDto,
   type CreateReviewDto,
   type CustomerAddressDto,
   type CustomerProfileDto,
@@ -43,6 +83,9 @@ import {
   type ProfessionalPaymentDto,
   type ProfessionalServiceRecordDto,
   type ReviewDto,
+  type SetCategoryStatusDto,
+  type SetServiceStatusDto,
+  type UpdateCategoryDto,
   type UpdateCustomerProfileDto,
   type UpdateProfessionalProfileDto,
   type UpdateProfessionalServiceDto,
@@ -68,7 +111,7 @@ export function createCustomerAccountApi(client: HelpzyApiClient) {
         schema: customerProfileSchema,
       }),
 
-    uploadPhoto: (base64: string, contentType: 'image/jpeg' | 'image/png' | 'image/webp') =>
+    uploadPhoto: (base64: string, contentType: ProfileImageContentType) =>
       client.post(
         'customer/account/profile/photo',
         { data: base64, contentType },
@@ -153,8 +196,13 @@ export function createPaymentsApi(client: HelpzyApiClient) {
         signal,
       }),
 
-    /** The amount is taken from the agreed service price, never from here. */
-    start: (bookingId: string, method: 'ONLINE' | 'DIRECT') =>
+    /**
+     * The amount is taken from the agreed service price, never from here.
+     *
+     * `CASH` starts a handover that only settles once both parties have
+     * confirmed it, so it is a legal choice alongside a gateway payment.
+     */
+    start: (bookingId: string, method: 'ONLINE' | 'DIRECT' | 'CASH') =>
       client.post(
         `customer/payments/${encodeURIComponent(bookingId)}`,
         startPaymentSchema.parse({ method }),
@@ -166,6 +214,28 @@ export function createPaymentsApi(client: HelpzyApiClient) {
         schema: professionalPaymentSchema,
         signal,
       }),
+
+    /**
+     * The customer's half of a cash handover.
+     *
+     * Confirming records only that this party agrees the money changed
+     * hands. The payment settles once the professional has confirmed it
+     * too, so a single confirmation never marks the booking paid.
+     */
+    confirmCashCustomer: (bookingId: string, note?: string) =>
+      client.post(
+        `customer/payments/${encodeURIComponent(bookingId)}/cash/confirm`,
+        confirmCashPaymentSchema.parse(note === undefined ? {} : { note }),
+        { schema: bookingPaymentSchema },
+      ),
+
+    /** The professional's half of a cash handover. */
+    confirmCashProfessional: (bookingId: string, note?: string) =>
+      client.post(
+        `professional/payments/${encodeURIComponent(bookingId)}/cash/confirm`,
+        confirmCashPaymentSchema.parse(note === undefined ? {} : { note }),
+        { schema: bookingPaymentSchema },
+      ),
 
     /** Only the assigned professional can confirm a direct payment receipt. */
     recordDirect: (bookingId: string, note?: string) =>
@@ -260,7 +330,7 @@ export function createProfessionalProfileApi(client: HelpzyApiClient) {
       client.patch('professional/profile', updateProfessionalProfileSchema.parse(input), {
         schema: professionalOwnProfileSchema,
       }),
-    uploadPhoto: (base64: string, contentType: 'image/jpeg' | 'image/png' | 'image/webp') =>
+    uploadPhoto: (base64: string, contentType: ProfileImageContentType) =>
       client.post(
         'professional/profile/photo',
         { data: base64, contentType },
@@ -305,10 +375,24 @@ export function createAdminApi(client: HelpzyApiClient) {
     summary: (signal?: AbortSignal) =>
       client.get('admin/summary', { schema: adminDashboardSummarySchema, signal }),
 
-    listUsers: (filter: { role?: string; status?: string } = {}, signal?: AbortSignal) =>
+    bookings: (
+      filter: { search?: string; status?: string; from?: string; to?: string } = {},
+      signal?: AbortSignal,
+    ) => client.get('admin/bookings', { schema: adminBookingsSchema, query: filter, signal }),
+
+    listUsers: (
+      filter: { role?: string; status?: string; search?: string; categoryId?: string } = {},
+      signal?: AbortSignal,
+    ) =>
       client.get('admin/users', {
         schema: z.array(adminUserSummarySchema),
         query: filter,
+        signal,
+      }),
+
+    professionalDetail: (userId: string, signal?: AbortSignal) =>
+      client.get(`admin/professionals/${encodeURIComponent(userId)}`, {
+        schema: adminProfessionalDetailSchema,
         signal,
       }),
 
@@ -340,6 +424,147 @@ export function createAdminApi(client: HelpzyApiClient) {
 
     auditLog: (signal?: AbortSignal) =>
       client.get('admin/audit', { schema: z.array(adminAuditEntrySchema), signal }),
+
+    categories: (filter: { search?: string } = {}, signal?: AbortSignal) =>
+      client.get('admin/categories', { schema: adminCategoriesSchema, query: filter, signal }),
+
+    createCategory: (input: CreateCategoryDto) =>
+      client.post('admin/categories', createCategorySchema.parse(input), {
+        schema: adminCategorySchema,
+      }),
+
+    updateCategory: (categoryId: string, input: UpdateCategoryDto) =>
+      client.patch(
+        `admin/categories/${encodeURIComponent(categoryId)}`,
+        updateCategorySchema.parse(input),
+        { schema: adminCategorySchema },
+      ),
+
+    setCategoryStatus: (categoryId: string, input: SetCategoryStatusDto) =>
+      client.patch(
+        `admin/categories/${encodeURIComponent(categoryId)}/status`,
+        setCategoryStatusSchema.parse(input),
+        { schema: adminCategorySchema },
+      ),
+
+    /**
+     * Every listing the admin can moderate, withdrawn ones included. A reason is
+     * required in both directions and is shown to the professional.
+     */
+    services: (
+      filter: { search?: string; categoryId?: string; onlyInactive?: boolean } = {},
+      signal?: AbortSignal,
+    ) => client.get('admin/services', { schema: adminServicesSchema, query: filter, signal }),
+
+    setServiceStatus: (serviceId: string, input: SetServiceStatusDto) =>
+      client.patch(
+        `admin/services/${encodeURIComponent(serviceId)}/status`,
+        setServiceStatusSchema.parse(input),
+        { schema: adminServiceSchema },
+      ),
+
+    /* ------------------------------------------------------ reports & disputes */
+
+    reports: (
+      filter: { status?: string; reason?: string; search?: string } = {},
+      signal?: AbortSignal,
+    ) => client.get('admin/reports', { schema: reportsSchema, query: filter, signal }),
+
+    report: (reportId: string, signal?: AbortSignal) =>
+      client.get(`admin/reports/${encodeURIComponent(reportId)}`, {
+        schema: reportSchema,
+        signal,
+      }),
+
+    /** Claim a report for triage without deciding it. */
+    startReportReview: (reportId: string) =>
+      client.patch(
+        `admin/reports/${encodeURIComponent(reportId)}/review`,
+        // Claiming takes no body. It is parsed through the shared empty schema
+        // rather than passed as a bare `{}` so a field added to that schema later
+        // cannot be silently dropped on the way out.
+        startReportReviewSchema.parse({}),
+        {
+          schema: reportSchema,
+        },
+      ),
+
+    resolveReport: (reportId: string, input: ResolveReportDto) =>
+      client.patch(
+        `admin/reports/${encodeURIComponent(reportId)}/resolve`,
+        resolveReportSchema.parse(input),
+        { schema: reportSchema },
+      ),
+
+    disputes: (filter: { status?: string; search?: string } = {}, signal?: AbortSignal) =>
+      client.get('admin/disputes', { schema: disputesSchema, query: filter, signal }),
+
+    dispute: (disputeId: string, signal?: AbortSignal) =>
+      client.get(`admin/disputes/${encodeURIComponent(disputeId)}`, {
+        schema: disputeDetailSchema,
+        signal,
+      }),
+
+    startDisputeReview: (disputeId: string) =>
+      client.patch(
+        `admin/disputes/${encodeURIComponent(disputeId)}/review`,
+        {},
+        {
+          schema: disputeDetailSchema,
+        },
+      ),
+
+    resolveDispute: (disputeId: string, input: ResolveDisputeDto) =>
+      client.patch(
+        `admin/disputes/${encodeURIComponent(disputeId)}/resolve`,
+        resolveDisputeSchema.parse(input),
+        { schema: disputeDetailSchema },
+      ),
+
+    /* --------------------------------------------------- booking oversight */
+
+    /** The whole booking in one payload: parties, money, chat and timeline. */
+    bookingDetail: (bookingId: string, signal?: AbortSignal) =>
+      client.get(`admin/bookings/${encodeURIComponent(bookingId)}`, {
+        schema: adminBookingDetailSchema,
+        signal,
+      }),
+
+    /**
+     * Force a booking into a status the normal flow would not reach. The reason
+     * is required on both the client and the server: it is what makes an
+     * intervention legible afterwards.
+     */
+    overrideBookingStatus: (bookingId: string, input: OverrideBookingStatusDto) =>
+      client.patch(
+        `admin/bookings/${encodeURIComponent(bookingId)}/status`,
+        overrideBookingStatusSchema.parse(input),
+        { schema: adminBookingDetailSchema },
+      ),
+
+    refundBooking: (bookingId: string, input: RefundBookingDto) =>
+      client.patch(
+        `admin/bookings/${encodeURIComponent(bookingId)}/refund`,
+        refundBookingSchema.parse(input),
+        { schema: adminBookingDetailSchema },
+      ),
+
+    /* ------------------------------------------------ platform settings */
+
+    /** The whole settings document, for the admin form. */
+    platformSettings: (signal?: AbortSignal) =>
+      client.get('admin/settings', { schema: platformSettingsResponseSchema, signal }),
+
+    /**
+     * Saves part of the settings document.
+     *
+     * Parsed client-side with the same schema the server uses, so a contradictory
+     * combination is refused before a request is sent rather than after.
+     */
+    updatePlatformSettings: (input: UpdatePlatformSettings) =>
+      client.patch('admin/settings', updatePlatformSettingsSchema.parse(input), {
+        schema: platformSettingsResponseSchema,
+      }),
   };
 }
 
@@ -355,7 +580,21 @@ export type ProfessionalServicesApi = ReturnType<typeof createProfessionalServic
 export type AdminApi = ReturnType<typeof createAdminApi>;
 
 export type {
+  AdminBookingDetailDto,
+  AdminBookingDto,
+  AdminCategoryDto,
+  AdminProfessionalDetailDto,
+  AdminServiceDto,
   AdminUserSummaryDto,
+  CreateReportDto,
+  DisputeDetailDto,
+  DisputeDto,
+  OpenDisputeDto,
+  OverrideBookingStatusDto,
+  RefundBookingDto,
+  ReportDto,
+  ResolveDisputeDto,
+  ResolveReportDto,
   AdminVerificationRequestDto,
   CustomerAddressDto,
   CustomerProfileDto,
@@ -366,4 +605,5 @@ export type {
   ProfessionalPaymentDto,
   ProfessionalServiceRecordDto,
   ReviewDto,
+  UpsertCustomerAddressDto,
 };

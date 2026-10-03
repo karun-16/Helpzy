@@ -22,6 +22,7 @@ interface AppExtra {
   apiBaseUrl?: string;
   apiTimeoutMs?: number;
   apiGlobalPrefix?: string;
+  mediaMaxBytes?: number;
 }
 
 const extra = (Constants.expoConfig?.extra ?? {}) as AppExtra;
@@ -30,11 +31,13 @@ function inlinedWebEnv(): {
   apiBaseUrl?: string;
   apiTimeoutMs?: number;
   apiGlobalPrefix?: string;
+  mediaMaxBytes?: number;
 } {
   return {
     apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL,
     apiTimeoutMs: Number(process.env.EXPO_PUBLIC_API_TIMEOUT_MS ?? '') || undefined,
     apiGlobalPrefix: process.env.EXPO_PUBLIC_API_GLOBAL_PREFIX,
+    mediaMaxBytes: Number(process.env.MEDIA_MAX_BYTES ?? '') || undefined,
   };
 }
 
@@ -46,4 +49,23 @@ export const appConfig = {
   apiBaseUrl: extra.apiBaseUrl ?? webEnv.apiBaseUrl ?? DEFAULT_API_BASE_URL,
   apiTimeoutMs: extra.apiTimeoutMs ?? webEnv.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS,
   apiGlobalPrefix: extra.apiGlobalPrefix ?? webEnv.apiGlobalPrefix ?? DEFAULT_API_GLOBAL_PREFIX,
+  mediaMaxBytes: extra.mediaMaxBytes ?? webEnv.mediaMaxBytes ?? 5 * 1024 * 1024,
 } as const;
+
+/** Resolve local API media URLs against the host this client actually uses. */
+export function resolveMediaUrl(uri: string): string {
+  if (uri.startsWith('data:')) return uri;
+  try {
+    const mediaUrl = new URL(uri, appConfig.apiBaseUrl);
+    const apiUrl = new URL(appConfig.apiBaseUrl);
+    const isLoopback = (hostname: string) =>
+      hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
+    if (isLoopback(mediaUrl.hostname) && !isLoopback(apiUrl.hostname)) {
+      mediaUrl.protocol = apiUrl.protocol;
+      mediaUrl.host = apiUrl.host;
+    }
+    return mediaUrl.toString();
+  } catch {
+    return uri;
+  }
+}

@@ -114,7 +114,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const payload = exception.getResponse();
 
       if (typeof payload === 'object' && payload !== null) {
-        const record = payload as { message?: unknown; code?: unknown; error?: unknown };
+        const record = payload as {
+          message?: unknown;
+          code?: unknown;
+          error?: unknown;
+          details?: unknown;
+        };
         // Only exceptions raised by our own code carry an explicit `code`, which
         // is what makes their message safe to forward. Everything else - most
         // importantly the router's own `{ message: 'Cannot GET /x' }` 404 - is
@@ -132,7 +137,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
             ? 'The request could not be processed.'
             : (GENERIC_MESSAGES[status] ?? 'The request could not be processed.');
 
-        return { status, code, message };
+        return { status, code, message, details: this.readFieldDetails(record.details) };
       }
 
       // String payloads come from the router itself (e.g. "Cannot GET /x").
@@ -156,6 +161,29 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: API_ERROR_CODES.INTERNAL_SERVER_ERROR,
       message: 'Something went wrong on our side. Please try again in a moment.',
     };
+  }
+
+  /**
+   * Keeps only well-formed field errors.
+   *
+   * Validation handlers attach `details` so a form can point at the offending
+   * input, but the payload is only trustworthy when it really is a list of
+   * `{ field, messages }`. Anything else is discarded rather than forwarded, so a
+   * stray value on an exception can never reach the client.
+   */
+  private readFieldDetails(details: unknown): ApiFieldError[] | undefined {
+    if (!Array.isArray(details) || details.length === 0) return undefined;
+    const parsed: ApiFieldError[] = [];
+    for (const entry of details) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const record = entry as { field?: unknown; messages?: unknown };
+      if (typeof record.field !== 'string') continue;
+      const messages = Array.isArray(record.messages)
+        ? record.messages.filter((item): item is string => typeof item === 'string')
+        : [];
+      parsed.push({ field: record.field, messages });
+    }
+    return parsed.length ? parsed : undefined;
   }
 
   /**

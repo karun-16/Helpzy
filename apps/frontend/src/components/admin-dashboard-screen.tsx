@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 
@@ -15,9 +15,15 @@ import {
   UserAvatar,
 } from '@/components/marketplace-ui';
 import { StatusBadge, StatusPill } from '@/components/ui';
+import { AdminBookingOversight } from '@/components/admin-booking-oversight';
+import { AdminCategoryManagement } from '@/components/admin-category-management';
+import { AdminDisputesPanel } from '@/components/admin-disputes-panel';
+import { AdminReportsPanel } from '@/components/admin-reports-panel';
+import { AdminServiceModeration } from '@/components/admin-service-moderation';
 import { api, ApiError } from '@/lib/api';
 import { useAuthSession } from '@/lib/hooks';
 import type {
+  AdminBookingDto,
   AdminUserSummaryDto,
   AdminVerificationRequestDto,
   ReviewDto,
@@ -39,9 +45,24 @@ export function AdminDashboardScreen() {
     null,
   );
   const [requests, setRequests] = useState<AdminVerificationRequestDto[] | null>(null);
-  const [users, setUsers] = useState<AdminUserSummaryDto[] | null>(null);
+  const [userResult, setUserResult] = useState<{
+    key: string;
+    data: AdminUserSummaryDto[] | null;
+    error: boolean;
+  } | null>(null);
+  const [userSearch, setUserSearch] = useState('');
+  const [userRole, setUserRole] = useState('ALL');
+  const [userStatus, setUserStatusFilter] = useState('ALL');
+  const [userCategoryId, setUserCategoryId] = useState('ALL');
+  const [userRetry, setUserRetry] = useState(0);
+  const [categories, setCategories] = useState<
+    Awaited<ReturnType<typeof api.customerDiscovery.getCategories>>
+  >([]);
   const [audit, setAudit] = useState<Awaited<ReturnType<typeof api.admin.auditLog>> | null>(null);
   const [reviews, setReviews] = useState<ReviewDto[] | null>(null);
+  const [bookings, setBookings] = useState<AdminBookingDto[] | null>(null);
+  const [bookingSearch, setBookingSearch] = useState('');
+  const [bookingStatus, setBookingStatus] = useState('ALL');
   const [failed, setFailed] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -63,16 +84,18 @@ export function AdminDashboardScreen() {
     Promise.all([
       api.admin.summary(controller.signal),
       api.admin.verificationRequests(controller.signal),
-      api.admin.listUsers({}, controller.signal),
       api.admin.auditLog(controller.signal),
       api.reviews.listForModeration(controller.signal),
+      api.admin.bookings({}, controller.signal),
+      api.customerDiscovery.getCategories(controller.signal).catch(() => []),
     ])
-      .then(([summaryData, requestData, userData, auditData, reviewData]) => {
+      .then(([summaryData, requestData, auditData, reviewData, bookingData, categoryData]) => {
         setSummary(summaryData);
         setRequests(requestData);
-        setUsers(userData);
         setAudit(auditData);
         setReviews(reviewData.reviews);
+        setBookings(bookingData);
+        setCategories(categoryData);
         setFailed(false);
       })
       .catch(() => {
@@ -81,6 +104,62 @@ export function AdminDashboardScreen() {
   }, []);
 
   const load = useCallback(() => fetchDashboard(), [fetchDashboard]);
+  const userFilterKey = JSON.stringify([
+    userSearch.trim(),
+    userRole,
+    userStatus,
+    userCategoryId,
+    userRetry,
+  ]);
+  const users = userResult?.key === userFilterKey ? userResult.data : null;
+  const userLoadFailed = userResult?.key === userFilterKey && userResult.error;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      api.admin
+        .listUsers(
+          {
+            ...(userSearch.trim() ? { search: userSearch.trim() } : {}),
+            ...(userRole !== 'ALL' ? { role: userRole } : {}),
+            ...(userStatus !== 'ALL' ? { status: userStatus } : {}),
+            ...(userCategoryId !== 'ALL' ? { categoryId: userCategoryId } : {}),
+          },
+          controller.signal,
+        )
+        .then((data) => setUserResult({ key: userFilterKey, data, error: false }))
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setUserResult({ key: userFilterKey, data: null, error: true });
+          }
+        });
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [userFilterKey, userRole, userSearch, userStatus, userCategoryId, userRetry]);
+
+  const userFiltersActive =
+    Boolean(userSearch.trim()) ||
+    userRole !== 'ALL' ||
+    userStatus !== 'ALL' ||
+    userCategoryId !== 'ALL';
+
+  const filteredBookings = (bookings ?? []).filter((booking) => {
+    const statusMatches = bookingStatus === 'ALL' || booking.status === bookingStatus;
+    const term = bookingSearch.trim().toLocaleLowerCase();
+    const searchMatches =
+      !term ||
+      [
+        booking.reference,
+        booking.serviceTitle,
+        booking.customerName,
+        booking.professionalName,
+        booking.businessName,
+      ].some((value) => value.toLocaleLowerCase().includes(term));
+    return statusMatches && searchMatches;
+  });
 
   useFocusEffect(
     useCallback(() => {
@@ -357,15 +436,129 @@ export function AdminDashboardScreen() {
                 </View>
               )}
 
-              <Text className="mt-8 text-xl font-bold text-primary">Users</Text>
-              {users === null ? (
-                <LoadingBlock label="Loading users..." />
+              <View className="mt-8 flex-row flex-wrap items-end justify-between gap-3">
+                <View>
+                  <Text className="text-xl font-bold text-primary">Users</Text>
+                  <Text className="mt-1 text-sm text-secondary">
+                    Search by name, phone, or email; combine with role, status, and service
+                    category.
+                  </Text>
+                </View>
+                {userFiltersActive ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setUserSearch('');
+                      setUserRole('ALL');
+                      setUserStatusFilter('ALL');
+                      setUserCategoryId('ALL');
+                    }}
+                    className="min-h-10 justify-center"
+                  >
+                    <Text className="text-sm font-semibold text-action-text">Clear filters</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              <View className="mt-3 flex-row items-center gap-2">
+                <TextInput
+                  accessibilityLabel="Search users"
+                  value={userSearch}
+                  onChangeText={setUserSearch}
+                  placeholder="Search name, phone, or email"
+                  placeholderTextColor="#94a3b8"
+                  className="min-h-12 min-w-40 flex-1 rounded-control border border-hairline-strong bg-surface px-4 text-sm text-primary"
+                />
+                {userSearch ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear user search"
+                    onPress={() => setUserSearch('')}
+                    className="min-h-11 justify-center px-2"
+                  >
+                    <Text className="font-semibold text-action-text">Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              <FilterChoices
+                label="Role"
+                value={userRole}
+                options={[
+                  { value: 'ALL', label: 'All roles' },
+                  { value: 'CUSTOMER', label: 'Customers' },
+                  { value: 'PROFESSIONAL', label: 'Professionals' },
+                  { value: 'ADMIN', label: 'Admins' },
+                ]}
+                onChange={(role) => {
+                  setUserRole(role);
+                  if (role !== 'PROFESSIONAL') setUserCategoryId('ALL');
+                }}
+              />
+              <FilterChoices
+                label="Status"
+                value={userStatus}
+                options={[
+                  { value: 'ALL', label: 'All statuses' },
+                  { value: 'ACTIVE', label: 'Active' },
+                  { value: 'SUSPENDED', label: 'Suspended' },
+                  { value: 'DEACTIVATED', label: 'Deactivated' },
+                ]}
+                onChange={setUserStatusFilter}
+              />
+              {categories.length > 0 ? (
+                <FilterChoices
+                  label="Professional category"
+                  value={userCategoryId}
+                  options={[
+                    { value: 'ALL', label: 'All categories' },
+                    ...categories.map((category) => ({ value: category.id, label: category.name })),
+                  ]}
+                  onChange={(categoryId) => {
+                    setUserCategoryId(categoryId);
+                    if (categoryId !== 'ALL') setUserRole('PROFESSIONAL');
+                  }}
+                  horizontal
+                />
+              ) : null}
+              {userFiltersActive ? (
+                <Text className="mt-2 text-xs text-muted" aria-live="polite">
+                  Active filters · {userRole !== 'ALL' ? userRole.toLowerCase() : null}
+                  {userRole !== 'ALL' && userStatus !== 'ALL' ? ' · ' : ''}
+                  {userStatus !== 'ALL' ? userStatus.toLowerCase() : null}
+                  {(userRole !== 'ALL' || userStatus !== 'ALL') && userCategoryId !== 'ALL'
+                    ? ' · '
+                    : ''}
+                  {userCategoryId !== 'ALL'
+                    ? categories.find((category) => category.id === userCategoryId)?.name
+                    : null}
+                  {(userRole !== 'ALL' || userStatus !== 'ALL' || userCategoryId !== 'ALL') &&
+                  userSearch.trim()
+                    ? ' · '
+                    : ''}
+                  {userSearch.trim() ? `“${userSearch.trim()}”` : null}
+                </Text>
+              ) : null}
+              {users === null && !userLoadFailed ? (
+                <LoadingBlock label="Loading matching users..." />
+              ) : userLoadFailed ? (
+                <ErrorBlock onRetry={() => setUserRetry((value) => value + 1)} />
+              ) : users?.length === 0 ? (
+                <EmptyBlock
+                  title="No matching users"
+                  detail="Try clearing or changing one or more filters."
+                  actionLabel="Clear filters"
+                  onAction={() => {
+                    setUserSearch('');
+                    setUserRole('ALL');
+                    setUserStatusFilter('ALL');
+                    setUserCategoryId('ALL');
+                  }}
+                />
               ) : (
                 <View className="mt-3 gap-3">
-                  {users.map((user) => (
+                  {users?.map((user) => (
                     <View
                       key={user.id}
-                      className="rounded-xl border border-hairline dark:border-hairline-strong bg-surface p-5"
+                      className="rounded-lg border border-hairline bg-surface p-4 dark:border-hairline-strong"
                     >
                       <View className="flex-row flex-wrap items-start justify-between gap-3">
                         <View className="min-w-48 flex-1">
@@ -373,6 +566,9 @@ export function AdminDashboardScreen() {
                           <Text className="mt-1 text-sm text-secondary">
                             {user.phone} · {user.role}
                           </Text>
+                          {user.email ? (
+                            <Text className="mt-1 text-sm text-muted">{user.email}</Text>
+                          ) : null}
                         </View>
                         <StatusPill
                           label={user.status}
@@ -382,7 +578,18 @@ export function AdminDashboardScreen() {
                       <Text className="mt-2 text-xs text-muted">
                         Joined {formatDateTime(user.createdAt)}
                       </Text>
-                      <View className="mt-3 flex-row flex-wrap gap-4">
+                      <View className="mt-3 flex-row flex-wrap items-center gap-x-5 gap-y-2">
+                        {user.role === 'PROFESSIONAL' ? (
+                          <Pressable
+                            accessibilityRole="link"
+                            onPress={() => router.push(`/admin/professionals/${user.id}`)}
+                            className="min-h-10 justify-center"
+                          >
+                            <Text className="text-sm font-semibold text-action-text">
+                              View professional
+                            </Text>
+                          </Pressable>
+                        ) : null}
                         {user.status === 'ACTIVE' ? (
                           <>
                             <UserAction
@@ -414,6 +621,16 @@ export function AdminDashboardScreen() {
                   ))}
                 </View>
               )}
+
+              <AdminCategoryManagement />
+
+              <AdminServiceModeration />
+
+              <AdminReportsPanel />
+
+              <AdminDisputesPanel />
+
+              <AdminBookingOversight />
 
               <Text className="mt-8 text-xl font-bold text-primary">Review moderation</Text>
               {reviews === null ? (
@@ -468,6 +685,85 @@ export function AdminDashboardScreen() {
                 </View>
               )}
 
+              <Text className="mt-8 text-xl font-bold text-primary">Booking oversight</Text>
+              <Text className="mt-1 text-sm text-secondary">
+                Read-only view of the 100 most recently scheduled bookings.
+              </Text>
+              <TextInput
+                accessibilityLabel="Search bookings"
+                value={bookingSearch}
+                onChangeText={setBookingSearch}
+                placeholder="Search reference, service, customer, or professional"
+                placeholderTextColor="#94a3b8"
+                className="mt-3 min-h-11 rounded-lg border border-hairline-strong bg-surface px-3 text-sm text-primary"
+              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mt-2">
+                <View className="flex-row gap-2">
+                  {[
+                    'ALL',
+                    'REQUESTED',
+                    'IN_PROGRESS',
+                    'COMPLETED_BY_PROFESSIONAL',
+                    'CANCELLED',
+                  ].map((status) => (
+                    <Pressable
+                      key={status}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: bookingStatus === status }}
+                      onPress={() => setBookingStatus(status)}
+                      className={`min-h-10 justify-center rounded-lg px-3 ${bookingStatus === status ? 'bg-brand-800' : 'border border-hairline-strong bg-surface'}`}
+                    >
+                      <Text
+                        className={`text-xs font-semibold ${bookingStatus === status ? 'text-white' : 'text-secondary dark:text-primary'}`}
+                      >
+                        {status === 'ALL' ? 'All statuses' : status.replaceAll('_', ' ')}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </ScrollView>
+              {bookings === null ? (
+                <LoadingBlock label="Loading bookings..." />
+              ) : filteredBookings.length === 0 ? (
+                <EmptyBlock
+                  title="No matching bookings"
+                  detail="Try another search or status filter."
+                />
+              ) : (
+                <View className="mt-3 gap-3">
+                  {filteredBookings.map((booking) => (
+                    <View
+                      key={booking.id}
+                      className="rounded-lg border border-hairline bg-surface p-4 dark:border-hairline-strong"
+                    >
+                      <View className="flex-row flex-wrap items-start justify-between gap-3">
+                        <View className="min-w-48 flex-1">
+                          <Text className="font-bold text-primary">{booking.serviceTitle}</Text>
+                          <Text className="mt-1 text-xs text-muted">
+                            {booking.reference} · {formatDateTime(booking.scheduledStart)}
+                          </Text>
+                        </View>
+                        <StatusPill label={booking.status.replaceAll('_', ' ')} tone="neutral" />
+                      </View>
+                      <View className="mt-3 flex-row flex-wrap gap-x-6 gap-y-2">
+                        <Text className="text-sm text-secondary">
+                          Customer: {booking.customerName}
+                        </Text>
+                        <Text className="text-sm text-secondary">
+                          Professional: {booking.businessName} · {booking.professionalName}
+                        </Text>
+                        <Text className="text-sm text-secondary">
+                          Payment: {booking.paymentStatus ?? 'Not started'}
+                        </Text>
+                        <Text className="text-sm text-secondary">
+                          Review: {booking.reviewStatus ?? 'None'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+
               <Text className="mt-8 text-xl font-bold text-primary">Audit log</Text>
               {audit === null ? (
                 <LoadingBlock label="Loading the audit log..." />
@@ -496,6 +792,49 @@ export function AdminDashboardScreen() {
         </View>
       </ScrollView>
     </RoleScreen>
+  );
+}
+
+function FilterChoices({
+  label,
+  value,
+  options,
+  onChange,
+  horizontal = false,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  horizontal?: boolean;
+}) {
+  const choices = options.map((option) => (
+    <Pressable
+      key={option.value}
+      accessibilityRole="radio"
+      accessibilityState={{ selected: value === option.value }}
+      onPress={() => onChange(option.value)}
+      className={`min-h-9 justify-center rounded-control px-3 ${value === option.value ? 'bg-action-fill' : 'border border-hairline-strong bg-surface'}`}
+    >
+      <Text
+        className={`text-xs font-semibold ${value === option.value ? 'text-white' : 'text-primary'}`}
+      >
+        {option.label}
+      </Text>
+    </Pressable>
+  ));
+
+  return (
+    <View className="mt-3 gap-1.5">
+      <Text className="text-xs font-semibold text-secondary">{label}</Text>
+      {horizontal ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View className="flex-row gap-2">{choices}</View>
+        </ScrollView>
+      ) : (
+        <View className="flex-row flex-wrap gap-2">{choices}</View>
+      )}
+    </View>
   );
 }
 

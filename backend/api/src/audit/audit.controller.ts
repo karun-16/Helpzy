@@ -7,7 +7,14 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { AuditService } from './audit.service';
 
-const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
+/**
+ * Every value of the Prisma `AuditEntityType` enum.
+ *
+ * Exported so `audit.controller.spec.ts` can assert it stays in step with the
+ * schema: an entity type that a service audits but this list omits can be written
+ * to the table and still be unreachable through the admin audit filter.
+ */
+export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'USER',
   'PROFESSIONAL_PROFILE',
   'SERVICE',
@@ -16,6 +23,10 @@ const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'PAYMENT',
   'REVIEW',
   'NOTIFICATION',
+  'REPORT',
+  'DISPUTE',
+  'VERIFICATION_DOCUMENT',
+  'PLATFORM_SETTING',
 ];
 
 @Controller('admin/audit')

@@ -7,6 +7,7 @@ import { ApiResponseInterceptor } from './common/interceptors/api-response.inter
 import { ConfigModule } from './config/config.module';
 import { CustomerAccountModule } from './customer-account/customer-account.module';
 import { CustomerDiscoveryModule } from './customer-discovery/customer-discovery.module';
+import { DisputesModule } from './disputes/disputes.module';
 import { CustomerBookingsModule } from './customer-bookings/customer-bookings.module';
 import { ProfessionalBookingsModule } from './professional-bookings/professional-bookings.module';
 import { ProfessionalProfileModule } from './professional-profile/professional-profile.module';
@@ -16,6 +17,8 @@ import { HealthModule } from './health/health.module';
 import { MediaModule } from './media/media.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PaymentsModule } from './payments/payments.module';
+import { PlatformSettingsModule } from './platform-settings/platform-settings.module';
+import { ReportsModule } from './reports/reports.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { AuditModule } from './audit/audit.module';
 import { BookingChatModule } from './booking-chat/booking-chat.module';
@@ -41,6 +44,9 @@ import { AdminModule } from './admin/admin.module';
     MediaModule,
     NotificationsModule,
     AuditModule,
+    // Global, so every module that enforces a platform rule can inject the
+    // settings service without importing it.
+    PlatformSettingsModule,
     CustomerDiscoveryModule,
     CustomerBookingsModule,
     CustomerAccountModule,
@@ -50,6 +56,8 @@ import { AdminModule } from './admin/admin.module';
     PaymentsModule,
     ReviewsModule,
     BookingChatModule,
+    ReportsModule,
+    DisputesModule,
     LocationModule,
     AdminModule,
   ],

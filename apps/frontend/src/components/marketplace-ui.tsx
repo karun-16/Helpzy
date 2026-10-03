@@ -11,13 +11,23 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import helpzyLogo from '../../assets/helpzy.png';
 
 import { Popover } from '@/components/popover';
-import { appConfig } from '@/lib/config';
+import { PlatformNoticeBanner } from '@/components/platform-notice-banner';
+import { appConfig, resolveMediaUrl } from '@/lib/config';
+import { api } from '@/lib/api';
 import { buildDashboardRoute, clearAuthSession, type SessionRole } from '@/lib/auth-session';
-import { useAuthSession, useThemePreference, useViewer, initialsFor } from '@/lib/hooks';
+import {
+  useAuthSession,
+  useLoadableImage,
+  useThemePreference,
+  useViewer,
+  initialsFor,
+} from '@/lib/hooks';
 import { resetUnreadCount, useUnreadCount } from '@/lib/notifications';
 import type { ThemePreference } from '@/lib/auth-session';
+import type { PublicPlatformSettings } from '@helpzy/api-client';
 
 /**
  * Small building blocks shared by the marketplace screens.
@@ -59,9 +69,11 @@ export function formatMoney(amount: number, currency: string): string {
 
 export function ScreenShell({ children }: { children: ReactNode }) {
   return (
-    <View className="flex-1 bg-slate-50 dark:bg-canvas">
+    <View className="flex-1 bg-canvas">
       <ScrollView contentContainerStyle={{ paddingBottom: 56 }}>
-        <View className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 lg:px-8">{children}</View>
+        <View className="mx-auto w-full max-w-4xl px-4 py-7 sm:px-6 sm:py-8 lg:px-8">
+          {children}
+        </View>
       </ScrollView>
     </View>
   );
@@ -88,7 +100,7 @@ export function EmptyBlock({
   onAction?: () => void;
 }) {
   return (
-    <View className="mt-4 rounded-xl border border-hairline bg-surface px-5 py-8 dark:border-hairline-strong">
+    <View className="mt-4 rounded-lg border border-hairline bg-surface px-5 py-6 shadow-sm shadow-slate-200/50 dark:border-hairline-strong dark:shadow-none">
       <Text className="text-base font-semibold text-primary">{title}</Text>
       <Text className="mt-1 text-sm leading-5 text-secondary">{detail}</Text>
       {actionLabel && onAction ? (
@@ -146,7 +158,7 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <View className="mt-5 rounded-xl border border-hairline bg-surface p-5 dark:border-hairline-strong">
+    <View className="mt-5 rounded-lg border border-hairline bg-surface p-5 shadow-sm shadow-slate-200/40 dark:border-hairline-strong dark:shadow-none">
       <Text className="text-base font-bold text-primary">{title}</Text>
       {subtitle ? <Text className="mt-1 text-sm text-secondary">{subtitle}</Text> : null}
       <View className="mt-4">{children}</View>
@@ -404,12 +416,22 @@ export function UserAvatar({
   size?: number;
 }) {
   const initials = initialsFor(name);
+  const resolvedUri = avatarUrl ? resolveMediaUrl(avatarUrl) : null;
+  /*
+   * Retries a bounded number of times before accepting the failure. Latching onto
+   * the first error is what made a photo that had genuinely saved look like it
+   * had not: one slow response put the avatar on initials for the rest of the
+   * session, with nothing ever asking the server again.
+   */
+  const photo = useLoadableImage(resolvedUri);
 
-  if (avatarUrl) {
+  if (photo.uri) {
     return (
       <Image
-        source={{ uri: avatarUrl }}
+        key={photo.attemptKey}
+        source={{ uri: photo.uri }}
         accessibilityLabel={`${name} profile photo`}
+        onError={photo.onError}
         style={{ height: size, width: size, borderRadius: size / 2 }}
         className="bg-surface-sunken dark:bg-slate-700"
       />
@@ -474,10 +496,9 @@ function navigationFor(role: SessionRole): Array<{ label: string; route: string 
 function menuFor(role: SessionRole): Array<{ label: string; route: string }> {
   if (role === 'CUSTOMER') {
     return [
-      { label: 'My Profile', route: '/customer/settings' },
+      { label: 'My Profile', route: '/customer/profile' },
       { label: 'My Bookings', route: '/customer/bookings' },
-      { label: 'Notifications', route: '/customer/notifications' },
-      { label: 'Saved Addresses', route: '/customer/settings#addresses' },
+      { label: 'Saved Addresses', route: '/customer/addresses' },
       { label: 'Settings', route: '/customer/settings' },
     ];
   }
@@ -485,15 +506,16 @@ function menuFor(role: SessionRole): Array<{ label: string; route: string }> {
   if (role === 'PROFESSIONAL') {
     return [
       { label: 'My Profile', route: '/professional/profile' },
-      { label: 'My Jobs', route: '/professional/my-jobs' },
-      { label: 'My Services', route: '/professional/services' },
-      { label: 'Reviews', route: '/professional/reviews' },
-      { label: 'Notifications', route: '/professional/notifications' },
-      { label: 'Settings', route: '/professional/profile' },
+      { label: 'Verification', route: '/professional/verification' },
+      { label: 'Settings', route: '/professional/settings' },
     ];
   }
 
-  return [{ label: 'Dashboard', route: '/admin' }];
+  return [
+    { label: 'Dashboard', route: '/admin' },
+    { label: 'Verification queue', route: '/admin/verification' },
+    { label: 'Settings', route: '/admin/settings' },
+  ];
 }
 
 function notificationsRouteFor(role: SessionRole): string {
@@ -559,7 +581,18 @@ export function MarketplaceHeader({
   return (
     <View className="sticky top-0 z-40 border-b border-hairline bg-surface">
       <View className="mx-auto w-full max-w-6xl flex-row flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 lg:px-8">
-        <Pressable accessibilityRole="button" onPress={onHome}>
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel="HELPZY home"
+          onPress={onHome}
+          className="flex-row items-center gap-2"
+        >
+          <Image
+            source={helpzyLogo}
+            accessibilityLabel="HELPZY logo"
+            resizeMode="contain"
+            style={{ width: 40, height: 32 }}
+          />
           <Text className="text-2xl font-black text-primary">HELPZY</Text>
         </Pressable>
 
@@ -639,17 +672,21 @@ export function MarketplaceHeader({
                     </Text>
                   </Pressable>
                 ))}
-                <MenuThemeSwitch />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Log out"
-                  onPress={logOut}
-                  className="mt-2 min-h-10 justify-center rounded-lg border-t border-hairline px-3 pt-2 dark:border-hairline-strong"
-                >
-                  <Text className="text-sm font-semibold text-rose-700 dark:text-rose-300">
-                    Log out
-                  </Text>
-                </Pressable>
+                {role === 'ADMIN' ? (
+                  <>
+                    <MenuThemeSwitch />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Log out"
+                      onPress={logOut}
+                      className="mt-2 min-h-10 justify-center rounded-lg border-t border-hairline px-3 pt-2 dark:border-hairline-strong"
+                    >
+                      <Text className="text-sm font-semibold text-rose-700 dark:text-rose-300">
+                        Log out
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : null}
               </Popover>
             </>
           ) : (
@@ -756,6 +793,28 @@ export function RoleScreen({
 }) {
   const router = useRouter();
   const session = useAuthSession();
+  const [platformSettings, setPlatformSettings] = useState<PublicPlatformSettings | null>(null);
+
+  /*
+   * An admin's announcement and any maintenance mode belong above
+   * every working screen, not just the customer marketplace, so a
+   * professional about to book out a day or an admin mid-review
+   * learns the same thing a browsing customer does. The banner is
+   * best-effort: a failed load renders nothing, because the server
+   * enforces maintenance mode on every write regardless of what is
+   * shown here.
+   */
+  useEffect(() => {
+    if (!session) return;
+    const controller = new AbortController();
+    api.customerDiscovery
+      .platformSettings(controller.signal)
+      .then((data) => setPlatformSettings(data.publicView))
+      .catch(() => {
+        /* The banner is optional; the rules it describes are not. */
+      });
+    return () => controller.abort();
+  }, [session]);
 
   useEffect(() => {
     if (!session) {
@@ -772,6 +831,7 @@ export function RoleScreen({
   return (
     <View className="flex-1 bg-slate-50 dark:bg-canvas">
       <MarketplaceHeader homeRoute={homeRoute} onHome={onHome} />
+      <PlatformNoticeBanner settings={platformSettings} />
       {children}
     </View>
   );

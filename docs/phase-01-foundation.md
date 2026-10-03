@@ -175,8 +175,9 @@ Three defects in the code itself were found by that verification and fixed:
 - No frontend unit test runner - no testable UI logic exists yet.
 - No Git commit was made during PHASE 1; the first checkpoint is the PHASE 2
   commit.
-- `PBL Template.pdf` (the original brief) is still in the working tree,
-  unmodified.
+- `PBL Template.pdf` (the original brief) was still in the working tree,
+  unmodified, at the end of this phase. It was removed from the repository
+  before the final push so the brief is not published with the source.
 - No Android device or iOS simulator run - only exports.
 
 ## Next step

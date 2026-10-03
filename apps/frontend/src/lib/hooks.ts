@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useColorScheme as useNativeWindColorScheme } from 'nativewind';
 
 import {
@@ -138,4 +138,71 @@ export function initialsFor(name: string | null | undefined): string {
     .slice(0, 2)
     .map((part) => part[0] ?? '');
   return letters.join('').toUpperCase() || '?';
+}
+
+/** How many times a failing image is retried before the fallback is accepted. */
+const IMAGE_LOAD_ATTEMPTS = 2;
+
+export interface LoadableImage {
+  /** The URL to render, or `null` when it failed and the caller should fall back. */
+  uri: string | null;
+  /** Pass to the image's `onError`. */
+  onError: () => void;
+  /**
+   * Put on the image's `key`.
+   *
+   * A retry re-requests the *same* URL, and neither React Native nor the DOM
+   * retries a failed image on their own. Changing the key remounts the element,
+   * which is what actually re-issues the request.
+   */
+  attemptKey: number;
+}
+
+/**
+ * Renders an image URL, retrying a bounded number of times before giving up.
+ *
+ * The problem this exists for: an avatar that fails once - a slow connection, a
+ * phone leaving wifi mid-load - used to stay on its initials fallback for the
+ * rest of the session. Nothing ever re-requested it, and the only way back was a
+ * full reload, which reads to a person as "my photo didn't save". A photo that
+ * was saved *is* on the server; the screen was simply never asking again.
+ *
+ * Retries are capped rather than unbounded, because a genuinely missing file
+ * must still end up on the initials rather than in an endless request loop.
+ *
+ * Shared by the header avatar and the profile photo editor on purpose: both fell
+ * back to initials on failure, and two copies of that rule is how they end up
+ * disagreeing about whether a photo is showing.
+ */
+export function useLoadableImage(url: string | null): LoadableImage {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  /*
+   * A different URL is a different image, so it starts from a clean slate. This
+   * is what stops a photo that has just been replaced from inheriting the
+   * failure verdict of the photo it replaced.
+   */
+  const [trackedUrl, setTrackedUrl] = useState(url);
+  if (trackedUrl !== url) {
+    setTrackedUrl(url);
+    setFailedUrl(null);
+    setAttempt(0);
+  }
+
+  const onError = useCallback(() => {
+    setAttempt((current) => {
+      if (current >= IMAGE_LOAD_ATTEMPTS || !url) {
+        setFailedUrl(url);
+        return current;
+      }
+      return current + 1;
+    });
+  }, [url]);
+
+  return {
+    uri: url && failedUrl !== url ? url : null,
+    onError,
+    attemptKey: attempt,
+  };
 }

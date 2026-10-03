@@ -30,11 +30,33 @@ export class AdminController {
   }
 
   @Get('users')
-  listUsers(@Query('role') role: string | undefined, @Query('status') status: string | undefined) {
+  listUsers(
+    @Query('role') role: string | undefined,
+    @Query('status') status: string | undefined,
+    @Query('search') search: string | undefined,
+    @Query('categoryId') categoryId: string | undefined,
+  ) {
     return this.admin.listUsers({
       ...(role ? { role } : {}),
       ...(status ? { status } : {}),
+      ...(search ? { search } : {}),
+      ...(categoryId ? { categoryId } : {}),
     });
+  }
+
+  @Get('professionals/:userId')
+  getProfessional(@Param('userId') userId: string) {
+    return this.admin.getProfessionalDetail(userId);
+  }
+
+  @Get('bookings')
+  listBookings(
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.admin.listBookings({ search, status, from, to });
   }
 
   @Patch('users/:userId/status')

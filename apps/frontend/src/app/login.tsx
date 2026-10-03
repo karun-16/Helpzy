@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 
@@ -17,8 +17,11 @@ export default function LoginScreen() {
   const [status, setStatus] = useState<'idle' | 'requesting' | 'verifying' | 'done'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<{ phone: string; otp?: string } | null>(null);
+  const pendingAction = useRef<'requesting' | 'verifying' | null>(null);
 
   const requestOtp = async () => {
+    if (pendingAction.current) return;
+    pendingAction.current = 'requesting';
     setError(null);
     setStatus('requesting');
 
@@ -29,13 +32,14 @@ export default function LoginScreen() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to send OTP.');
       setStatus('idle');
+    } finally {
+      pendingAction.current = null;
     }
   };
 
   const verifyOtp = async () => {
-    if (!challenge) {
-      return;
-    }
+    if (!challenge || pendingAction.current) return;
+    pendingAction.current = 'verifying';
 
     setError(null);
     setStatus('verifying');
@@ -59,6 +63,8 @@ export default function LoginScreen() {
     } catch (verifyError) {
       setError(verifyError instanceof Error ? verifyError.message : 'Unable to verify OTP.');
       setStatus('idle');
+    } finally {
+      pendingAction.current = null;
     }
   };
 
@@ -77,13 +83,17 @@ export default function LoginScreen() {
           placeholder="+91 98765 43210"
           placeholderTextColor="#94a3b8"
           keyboardType="phone-pad"
+          returnKeyType="go"
+          onSubmitEditing={() => void requestOtp()}
+          editable={status !== 'requesting'}
           className="mt-6 min-h-12 rounded-2xl border border-hairline dark:border-hairline-strong bg-slate-50 dark:bg-canvas px-4 py-3 text-base text-primary dark:border-hairline-strong dark:bg-slate-800"
         />
 
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Send OTP"
-          accessibilityState={{ busy: status === 'requesting' }}
+          accessibilityState={{ busy: status === 'requesting', disabled: status === 'requesting' }}
+          disabled={status === 'requesting'}
           onPress={requestOtp}
           className="mt-4 min-h-12 justify-center rounded-xl bg-brand-600 px-4 py-3"
         >
@@ -112,6 +122,9 @@ export default function LoginScreen() {
           placeholder="Enter 6-digit OTP"
           placeholderTextColor="#94a3b8"
           keyboardType="number-pad"
+          returnKeyType="done"
+          onSubmitEditing={() => void verifyOtp()}
+          editable={status !== 'verifying'}
           maxLength={6}
           className="mt-5 min-h-12 rounded-2xl border border-hairline dark:border-hairline-strong bg-slate-50 dark:bg-canvas px-4 py-3 text-base text-primary dark:border-hairline-strong dark:bg-slate-800"
         />
@@ -119,7 +132,11 @@ export default function LoginScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Verify OTP"
-          accessibilityState={{ busy: status === 'verifying' }}
+          accessibilityState={{
+            busy: status === 'verifying',
+            disabled: status === 'verifying' || !challenge,
+          }}
+          disabled={status === 'verifying' || !challenge}
           onPress={verifyOtp}
           className="mt-5 min-h-12 justify-center rounded-xl bg-brand-600 px-4 py-3 active:bg-brand-700"
         >

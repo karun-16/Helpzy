@@ -166,7 +166,18 @@ describe('Professional bookings (e2e)', () => {
     );
     prisma.booking.findFirst.mockImplementation(({ where, select }) => {
       const booking = bookings.get(where.id);
-      if (!booking || booking.professionalId !== where.professionalId) return null;
+      if (!booking) return null;
+      if (where.professionalId && booking.professionalId !== where.professionalId) {
+        return null;
+      }
+      const professional = where.professional as { userId?: string } | undefined;
+      if (professional?.userId) {
+        const bookingUserId =
+          booking.professionalId === PROFESSIONAL_PROFILE_ID
+            ? PROFESSIONAL_USER_ID
+            : OTHER_PROFESSIONAL_USER_ID;
+        if (bookingUserId !== professional.userId) return null;
+      }
       if (!select) return booking;
       // The lifecycle only needs enough of the booking to write history and
       // address the notification: identity, reference and both party names.
@@ -175,6 +186,11 @@ describe('Professional bookings (e2e)', () => {
         status: booking.status,
         reference: booking.reference,
         customerId: booking.customer.id,
+        completedByProfessionalId:
+          booking.status === 'COMPLETED_BY_PROFESSIONAL' || booking.status === 'CUSTOMER_CONFIRMED'
+            ? PROFESSIONAL_USER_ID
+            : null,
+        completedByCustomerId: booking.status === 'CUSTOMER_CONFIRMED' ? CUSTOMER_ID : null,
         professional: {
           userId:
             booking.professionalId === PROFESSIONAL_PROFILE_ID
@@ -189,15 +205,14 @@ describe('Professional bookings (e2e)', () => {
     });
     prisma.booking.updateMany.mockImplementation(({ where, data }) => {
       const booking = bookings.get(where.id);
-      if (
-        !booking ||
-        booking.professionalId !== where.professionalId ||
-        booking.status !== where.status
-      ) {
+      if (!booking) return { count: 0 };
+      if (where.professionalId && booking.professionalId !== where.professionalId) {
         return { count: 0 };
       }
-      booking.status = data.status;
-      if (data.completedAt !== undefined) booking.completedAt = data.completedAt;
+      if (where.status && booking.status !== where.status) {
+        return { count: 0 };
+      }
+      Object.assign(booking, data);
       return { count: 1 };
     });
     prisma.bookingStatusHistory.create.mockImplementation(({ data }) => {
@@ -500,15 +515,17 @@ describe('Professional bookings (e2e)', () => {
       expect(history).toHaveLength(0);
     });
 
-    it('rejects a lifecycle step once the customer has confirmed', async () => {
+    it('treats marking complete once the customer has confirmed as a no-op', async () => {
       const confirmed = createBooking(BOOKING_ID, PROFESSIONAL_PROFILE_ID, 'CUSTOMER_CONFIRMED');
       bookings.set(BOOKING_ID, confirmed);
 
+      // The professional already stamped completion on the way to
+      // `CUSTOMER_CONFIRMED`, so repeating it changes nothing.
       await request(app.getHttpServer())
         .post(`/api/v1/professional/bookings/${BOOKING_ID}/advance`)
         .set('Authorization', `Bearer ${professionalToken}`)
         .send({ action: 'COMPLETED_BY_PROFESSIONAL' })
-        .expect(409);
+        .expect(201);
 
       expect(confirmed.status).toBe('CUSTOMER_CONFIRMED');
       expect(history).toHaveLength(0);

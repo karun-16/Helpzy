@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
@@ -24,8 +24,11 @@ export default function RegisterScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [otp, setOtp] = useState('');
   const [challenge, setChallenge] = useState<{ phone: string; otp?: string } | null>(null);
+  const pendingAction = useRef<'requesting' | 'verifying' | null>(null);
 
   const requestOtp = async () => {
+    if (pendingAction.current) return;
+    pendingAction.current = 'requesting';
     setStatus('Sending OTP...');
     try {
       const response = await api.auth.requestRegistrationOtp({ phone, role });
@@ -41,13 +44,15 @@ export default function RegisterScreen() {
               ? error.message
               : 'Unable to send OTP. Please try again.',
       );
+    } finally {
+      pendingAction.current = null;
     }
   };
 
   const verifyOtp = async () => {
-    if (!challenge) {
-      return;
-    }
+    if (!challenge || pendingAction.current) return;
+    pendingAction.current = 'verifying';
+    setStatus('Verifying...');
 
     try {
       const response = await api.auth.verifyRegistrationOtp({
@@ -67,6 +72,8 @@ export default function RegisterScreen() {
             ? error.message
             : 'Unable to verify OTP. Please request a new code and try again.',
       );
+    } finally {
+      pendingAction.current = null;
     }
   };
 
@@ -99,11 +106,21 @@ export default function RegisterScreen() {
           onChangeText={setPhone}
           placeholder="+91 98765 43210"
           keyboardType="phone-pad"
+          returnKeyType="go"
+          onSubmitEditing={() => void requestOtp()}
           className="mt-5 rounded-2xl border border-hairline dark:border-hairline-strong bg-slate-50 dark:bg-canvas px-4 py-3 text-base text-primary"
         />
 
-        <Pressable onPress={requestOtp} className="mt-4 rounded-xl bg-brand-600 px-4 py-3">
-          <Text className="text-center text-base font-semibold text-white">Request OTP</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: status === 'Sending OTP...' }}
+          disabled={status === 'Sending OTP...'}
+          onPress={() => void requestOtp()}
+          className="mt-4 rounded-xl bg-brand-600 px-4 py-3"
+        >
+          <Text className="text-center text-base font-semibold text-white">
+            {status === 'Sending OTP...' ? 'Sending OTP...' : 'Request OTP'}
+          </Text>
         </Pressable>
 
         {challenge ? (
@@ -124,15 +141,22 @@ export default function RegisterScreen() {
           onChangeText={setOtp}
           placeholder="Enter OTP"
           keyboardType="number-pad"
+          returnKeyType="done"
+          onSubmitEditing={() => void verifyOtp()}
           maxLength={6}
           className="mt-5 rounded-2xl border border-hairline dark:border-hairline-strong bg-slate-50 dark:bg-canvas px-4 py-3 text-base text-primary"
         />
 
         <Pressable
-          onPress={verifyOtp}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !challenge || status === 'Verifying...' }}
+          disabled={!challenge || status === 'Verifying...'}
+          onPress={() => void verifyOtp()}
           className="mt-5 rounded-xl bg-brand-600 px-4 py-3 active:bg-brand-700"
         >
-          <Text className="text-center text-base font-semibold text-white">Verify</Text>
+          <Text className="text-center text-base font-semibold text-white">
+            {status === 'Verifying...' ? 'Verifying...' : 'Verify'}
+          </Text>
         </Pressable>
 
         {status ? (

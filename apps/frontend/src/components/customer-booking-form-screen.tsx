@@ -8,7 +8,7 @@ import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-hea
 import { DatePickerField, parseDisplayDate } from '@/components/date-picker-field';
 import { parseDisplayTime, TimePickerField, to24Hour } from '@/components/time-picker-field';
 import { api, ApiError } from '@/lib/api';
-import { clearAuthSession } from '@/lib/auth-session';
+import { clearAuthSession, writePendingAuthRedirect } from '@/lib/auth-session';
 import { useAuthSession } from '@/lib/hooks';
 
 type ProfessionalProfile = Awaited<ReturnType<typeof api.customerDiscovery.getProfessionalProfile>>;
@@ -92,6 +92,14 @@ export function CustomerBookingFormScreen() {
   const loading = Boolean(professionalId && serviceId) && profileResult?.key !== requestKey;
   const loadError =
     !professionalId || !serviceId || (profileResult?.key === requestKey && profileResult.error);
+
+  useEffect(() => {
+    if (!session && professionalId && serviceId) {
+      writePendingAuthRedirect(
+        `/customer/bookings/new?professionalId=${encodeURIComponent(professionalId)}&serviceId=${encodeURIComponent(serviceId)}`,
+      );
+    }
+  }, [professionalId, serviceId, session]);
 
   useEffect(() => {
     if (!professionalId || !serviceId) return;

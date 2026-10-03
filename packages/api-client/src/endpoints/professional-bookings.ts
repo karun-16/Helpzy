@@ -1,6 +1,7 @@
 import type { ProfessionalLifecycleStatus } from '@helpzy/types';
 import {
   bookingTimelineSchema,
+  completionStateSchema,
   professionalBookingSchema,
   professionalBookingsSchema,
 } from '@helpzy/validation';
@@ -41,6 +42,25 @@ export function createProfessionalBookingsApi(client: HelpzyApiClient) {
         { action },
         { schema: professionalBookingSchema },
       ),
+    /**
+     * The professional's half of mutual completion.
+     *
+     * Call this instead of `advance(COMPLETED_BY_PROFESSIONAL)`: `advance` moves
+     * the status but records no evidence, so the customer's confirmation would
+     * later be told the work had never been stamped as done.
+     */
+    markCompleted: (bookingId: string, note?: string) =>
+      client.post(
+        `professional/bookings/${encodeURIComponent(bookingId)}/complete`,
+        note === undefined ? {} : { note },
+        { schema: completionStateSchema },
+      ),
+    /** Who has confirmed completion, and whether the professional still owes theirs. */
+    completionState: (bookingId: string, signal?: AbortSignal) =>
+      client.get(`professional/bookings/${encodeURIComponent(bookingId)}/completion`, {
+        schema: completionStateSchema,
+        signal,
+      }),
   };
 }
 

@@ -3,11 +3,15 @@
 # dependencies
 node_modules/
 
+# Local tooling
+.kilo/
+
 # Expo
 .expo/
 dist/
 web-build/
 expo-env.d.ts
+*.log
 
 # Native
 .kotlin/

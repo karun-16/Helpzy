@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-nati
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-header';
+import { ReportProfessionalPanel } from '@/components/report-professional-panel';
 import { StatusBadge, VerifiedBadge } from '@/components/ui';
 import { api } from '@/lib/api';
 import { clearAuthSession, writePendingAuthRedirect } from '@/lib/auth-session';
@@ -296,6 +297,12 @@ export function CustomerProfessionalProfileScreen() {
                   </Text>
                 </View>
               )}
+
+              {/*
+                The route carries the professional's user id, which is what a
+                report is filed against, so this needs no extra lookup.
+              */}
+              <ReportProfessionalPanel professionalUserId={professionalId} />
             </>
           )}
         </View>

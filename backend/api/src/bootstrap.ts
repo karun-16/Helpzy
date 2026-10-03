@@ -2,7 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import helmet from 'helmet';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
@@ -53,6 +53,9 @@ export function configureApp(app: INestApplication, config: AppConfig): INestApp
   return app;
 }
 
+/** An Express request that also carries the untouched body bytes. */
+type RequestWithRawBody = Request & { rawBody?: Buffer };
+
 /**
  * Raises the JSON body limit above Express's 100kb default.
  *
@@ -73,15 +76,25 @@ function raiseJsonBodyLimit(app: INestApplication, config: AppConfig): void {
   // (`{"data":"...","contentType":"image/jpeg"}`).
   const limitBytes = Math.ceil((config.mediaMaxBytes * 4) / 3) + 64 * 1024;
 
+  /**
+   * A gateway signature is computed over the raw request body, so the untouched
+   * buffer is kept alongside the parsed body. Without this, re-serialising the
+   * parsed JSON could change a byte or a key order and the signature would no
+   * longer verify.
+   */
+  const verify = (request: Request, _response: Response, buffer: Buffer) => {
+    (request as RequestWithRawBody).rawBody = Buffer.from(buffer);
+  };
+
   const expressApp = app as NestExpressApplication;
   if (typeof expressApp.useBodyParser === 'function') {
-    expressApp.useBodyParser('json', { limit: limitBytes });
+    expressApp.useBodyParser('json', { limit: limitBytes, verify });
     expressApp.useBodyParser('urlencoded', { limit: limitBytes, extended: true });
     return;
   }
 
   // Fallback for an adapter without `useBodyParser`.
-  app.use(express.json({ limit: limitBytes }));
+  app.use(express.json({ limit: limitBytes, verify }));
   app.use(express.urlencoded({ extended: true, limit: limitBytes }));
 }
 
@@ -100,6 +113,28 @@ function serveLocalMedia(app: INestApplication, config: AppConfig): void {
 
   const root = resolve(config.mediaUploadDir);
   mkdirSync(root, { recursive: true });
+
+  /*
+   * Helmet's default `Cross-Origin-Resource-Policy: same-origin` is correct for
+   * the JSON API and wrong for this mount, so it is relaxed here and only here.
+   *
+   * A profile photo is rendered by an `<img>` that points at a different origin
+   * than the page - the Expo web server on :8081, or a CDN in a real deployment.
+   * An `<img>` without a `crossorigin` attribute is a *no-cors* request, which is
+   * exactly the case CORP is checked on, so `same-origin` makes the browser
+   * refuse to paint the photo. Nothing is ever logged and nothing ever errors in
+   * the network panel: the bytes are served, the avatar's `onError` fires, and the
+   * header falls back to initials - so an upload that genuinely saved read as one
+   * that did not. `cross-origin` restores it.
+   *
+   * Scoped to this mount deliberately: the API keeps Helmet's default, and the
+   * private verification documents are never mounted here at all, so identity
+   * documents cannot be widened by this.
+   */
+  app.use(baseUrl, (_request: Request, response: Response, next: NextFunction) => {
+    response.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  });
 
   app.use(
     baseUrl,

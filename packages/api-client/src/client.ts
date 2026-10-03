@@ -192,6 +192,53 @@ export class HelpzyApiClient {
     return this.request<T>(path, { ...options, method: 'DELETE' });
   }
 
+  /**
+   * Fetches bytes from an authorised route, with the session's bearer token.
+   *
+   * Exists because not every response is JSON: an admin opening a submitted
+   * identity document needs the file itself. Routing that through `get` would run
+   * the body through `readJson`, which is exactly the wrong thing to do with a
+   * PDF.
+   *
+   * Returns the raw `Response` so the caller chooses how to display it. Errors
+   * still arrive as `ApiError`, so a caller does not have to handle two failure
+   * shapes.
+   */
+  async fetchAuthorized(path: string, options: { signal?: AbortSignal } = {}): Promise<Response> {
+    const url = joinUrl(this.baseUrl, this.globalPrefix, path);
+    const headers: Record<string, string> = {};
+    const token = await this.resolveAuthToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), this.timeoutMs);
+    const onExternalAbort = () => timeoutController.abort();
+    options.signal?.addEventListener('abort', onExternalAbort);
+
+    try {
+      const response = await this.fetchImpl(url, {
+        method: 'GET',
+        headers,
+        signal: timeoutController.signal,
+      });
+      if (response.ok) return response;
+      throw this.toApiError(response, await this.readJson(response).catch(() => null));
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw options.signal?.aborted
+          ? ApiError.network('The request was cancelled.')
+          : ApiError.timeout(this.timeoutMs);
+      }
+      if (error instanceof ApiError) throw error;
+      throw ApiError.network(error instanceof Error && error.message ? error.message : undefined);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
   private async resolveAuthToken(): Promise<string | null> {
     if (!this.getAuthToken) return null;
     return (await this.getAuthToken()) ?? null;

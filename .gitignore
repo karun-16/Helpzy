@@ -20,8 +20,12 @@ expo-env.d.ts
 *.p8
 *.p12
 *.key
+*.pem
 *.mobileprovision
 *.orig.*
+# Merge and patch leftovers from a half-applied conflict resolution.
+*.rej
+*.orig
 ios/
 android/
 
@@ -46,12 +50,26 @@ prisma/generated/
 # never committed. A production media provider writes to its own store instead.
 backend/api/uploads/
 uploads/
+# Private uploads (PRIVATE_MEDIA_UPLOAD_DIR) hold identity documents - Aadhaar,
+# licences - which must never reach a repository at all. The directory name does
+# not match the `uploads/` pattern above, so it needs its own entry rather than
+# relying on a wildcard.
+backend/api/private-uploads/
+private-uploads/
 
 # Local database tooling
 *.sqlite
 *.sqlite3
 .pgpass
 pgpass
+# Dumps produced by pg_dump / pg_dumpall / pgAdmin. A dump contains every row,
+# including password hashes and the personal data of real accounts, so it has no
+# business in the repository even for a development database.
+*.dump
+*.backup
+*.sql.gz
+*.tar.gz
+backend/api/prisma/*.dump
 
 # Testing
 coverage-final.json
@@ -72,3 +90,15 @@ pnpm-debug.log*
 *.swp
 .DS_Store
 Thumbs.db
+.eslintcache
+
+# Local tooling
+.kilo/
+
+# Local generated audit reports
+# Working documents produced by review tooling, kept locally for the record.
+# They are not project documentation and are never part of the repository.
+HELPZY_FINAL_AUDIT.md
+
+# Local logs
+*.log

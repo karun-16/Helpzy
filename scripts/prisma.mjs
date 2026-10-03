@@ -15,7 +15,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
@@ -32,10 +32,25 @@ const require = createRequire(join(apiRoot, 'package.json'));
 const prismaPackagePath = require.resolve('prisma/package.json');
 const prismaEntry = join(dirname(prismaPackagePath), require(prismaPackagePath).bin.prisma);
 
+/**
+ * `prisma db seed` runs the seed command through a shell, so the CLI binaries the
+ * command names (`ts-node`) are resolved by name rather than by pnpm's own
+ * `exec`. Prepending the workspace bin directories makes the seed work from a
+ * bare `pnpm db:seed` on every platform instead of only when a package manager
+ * happened to put them on PATH.
+ */
+const binDirs = [
+  join(repoRoot, 'node_modules', '.bin'),
+  join(apiRoot, 'node_modules', '.bin'),
+].filter((dir) => existsSync(dir));
+
 const child = spawn(process.execPath, [prismaEntry, ...process.argv.slice(2)], {
   stdio: 'inherit',
   cwd: apiRoot,
-  env: process.env,
+  env: {
+    ...process.env,
+    PATH: [...binDirs, process.env.PATH].filter(Boolean).join(delimiter),
+  },
 });
 
 child.on('error', (error) => {

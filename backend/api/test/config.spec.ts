@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from 'node:path';
+
 import { API_ROUTES, resolveApiBaseUrl, resolveApiGlobalPrefix } from '@helpzy/config';
 
 import { envSchema, toAppConfig } from '../src/config/env';
@@ -20,6 +22,15 @@ describe('configuration', () => {
 
   it('strips surrounding slashes from the global prefix', () => {
     expect(resolveApiGlobalPrefix({ API_GLOBAL_PREFIX: '/api/v2/' })).toBe('api/v2');
+  });
+
+  it('resolves relative media storage paths against the API package directory', () => {
+    const defaultConfig = toAppConfig(envSchema.parse({}));
+    const customConfig = toAppConfig(envSchema.parse({ MEDIA_UPLOAD_DIR: 'custom-media' }));
+
+    expect(defaultConfig.mediaUploadDir).toBe(resolve(__dirname, '../uploads'));
+    expect(isAbsolute(customConfig.mediaUploadDir)).toBe(true);
+    expect(customConfig.mediaUploadDir).toBe(resolve(__dirname, '../custom-media'));
   });
 });
 

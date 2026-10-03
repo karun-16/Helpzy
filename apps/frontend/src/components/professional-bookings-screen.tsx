@@ -13,6 +13,8 @@ import {
 
 import { ProfessionalBookingTimeline } from '@/components/booking-timeline';
 import { BookingChatPanel, ProfessionalPaymentPanel } from '@/components/booking-panels';
+import { DisputePanel } from '@/components/dispute-panel';
+import { ReschedulePanel } from '@/components/reschedule-panel';
 import { RoleScreen } from '@/components/marketplace-ui';
 import { StatusPill } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
@@ -20,6 +22,8 @@ import { api, ApiError } from '@/lib/api';
 type ProfessionalBooking = Awaited<
   ReturnType<typeof api.professionalBookings.listIncoming>
 >[number];
+/** Who has confirmed completion, and whether this professional still owes theirs. */
+type CompletionState = Awaited<ReturnType<typeof api.professionalBookings.completionState>>;
 
 const LIFECYCLE_ACTION_LABELS: Record<ProfessionalLifecycleStatus, string> = {
   SCHEDULED: 'Mark scheduled',
@@ -117,50 +121,6 @@ export function ProfessionalDashboardScreen() {
             >
               <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
                 Refresh
-              </Text>
-            </Pressable>
-          </View>
-
-          {/*
-            The header already carries Dashboard / My Jobs / Services / Reviews
-            and the account menu, so these shortcuts are kept only as a visible
-            on-page path to the same routes rather than a second navigation set.
-          */}
-          <View className="mt-5 flex-row flex-wrap gap-5">
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Go to My Jobs"
-              onPress={() => router.push('/professional/my-jobs')}
-            >
-              <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
-                My Jobs
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Go to My Services"
-              onPress={() => router.push('/professional/services')}
-            >
-              <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
-                My Services
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Go to My Profile"
-              onPress={() => router.push('/professional/profile')}
-            >
-              <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
-                My Profile
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Go to My Reviews"
-              onPress={() => router.push('/professional/reviews')}
-            >
-              <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
-                My Reviews
               </Text>
             </Pressable>
           </View>
@@ -275,8 +235,10 @@ export function ProfessionalBookingDetailsScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [advancing, setAdvancing] = useState<ProfessionalLifecycleStatus | null>(null);
   const [advanceError, setAdvanceError] = useState('');
+  const [completion, setCompletion] = useState<CompletionState | null>(null);
   const current = result?.id === bookingId;
   const booking = current ? result.data : null;
+  const bookingStatus = booking?.status ?? null;
   const loading = Boolean(bookingId) && !current;
   const error = !bookingId || (current && result.error);
 
@@ -291,6 +253,35 @@ export function ProfessionalBookingDetailsScreen() {
       });
     return () => controller.abort();
   }, [bookingId]);
+
+  /**
+   * The completion record, not the booking status, is what says whether the job
+   * is finished. A professional who marks it complete and sees "complete" on the
+   * status pill must still be able to tell that the customer has not agreed yet.
+   */
+  useEffect(() => {
+    if (!bookingId) return;
+    const controller = new AbortController();
+    api.professionalBookings
+      .completionState(bookingId, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setCompletion(data);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCompletion(null);
+      });
+    return () => controller.abort();
+  }, [bookingId, bookingStatus]);
+
+  const reloadBooking = async () => {
+    if (!bookingId) return;
+    const [updated, state] = await Promise.all([
+      api.professionalBookings.get(bookingId),
+      api.professionalBookings.completionState(bookingId).catch(() => null),
+    ]);
+    setResult({ id: bookingId, data: updated, error: false });
+    setCompletion(state);
+  };
 
   /**
    * The only action the assigned professional may take from here. Derived from
@@ -308,13 +299,25 @@ export function ProfessionalBookingDetailsScreen() {
     setAdvancing(action);
     setAdvanceError('');
     try {
+      /*
+       * "Mark completed" is the professional's half of mutual completion, and it
+       * has to go through `/complete` rather than `/advance`: `advance` moves the
+       * status without recording who confirmed or when, which would leave the
+       * customer's later confirmation reporting that the work was never stamped
+       * as done.
+       */
+      if (action === 'COMPLETED_BY_PROFESSIONAL') {
+        await api.professionalBookings.markCompleted(booking.id);
+        await reloadBooking();
+        return;
+      }
       const updated = await api.professionalBookings.advance(booking.id, action);
       setResult({ id: updated.id, data: updated, error: false });
     } catch (requestError) {
       setAdvanceError(
         requestError instanceof ApiError
           ? requestError.message
-          : 'We couldnâ€™t update this booking. Please try again.',
+          : 'We couldn’t update this booking. Please try again.',
       );
     } finally {
       setAdvancing(null);
@@ -509,6 +512,37 @@ export function ProfessionalBookingDetailsScreen() {
                   </Text>
                 </View>
               )}
+              {completion ? (
+                <View className="mt-5 border-t border-hairline dark:border-hairline-strong pt-5">
+                  <Text className="text-sm font-semibold text-primary">Completion</Text>
+                  <View className="mt-3 gap-y-2">
+                    <Text className="text-sm text-secondary">
+                      You:{' '}
+                      {completion.professionalConfirmedAt
+                        ? `marked complete on ${formatDate(completion.professionalConfirmedAt)}`
+                        : 'have not marked it complete yet'}
+                    </Text>
+                    <Text className="text-sm text-secondary">
+                      {completion.customerConfirmedByName ?? 'The customer'}:{' '}
+                      {completion.customerConfirmedAt
+                        ? `confirmed on ${formatDate(completion.customerConfirmedAt)}`
+                        : 'has not confirmed yet'}
+                    </Text>
+                    <Text className="text-sm font-semibold text-primary">
+                      {completion.isComplete
+                        ? 'Both parties have confirmed this booking is complete.'
+                        : 'This booking is not complete until both parties confirm.'}
+                    </Text>
+                    {!completion.isComplete &&
+                    completion.professionalConfirmedAt &&
+                    !completion.customerConfirmedAt ? (
+                      <Text className="text-sm text-secondary">
+                        Waiting for the customer to confirm. You will be notified either way.
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
               {decision ? (
                 <Text className="mt-3 text-sm font-medium text-brand-800 dark:text-brand-300">
                   Request {decision === 'ACCEPTED' ? 'accepted' : 'rejected'}.
@@ -522,6 +556,7 @@ export function ProfessionalBookingDetailsScreen() {
                   {decisionError}
                 </Text>
               ) : null}
+              <ReschedulePanel bookingId={booking.id} />
               <ProfessionalBookingTimeline bookingId={booking.id} />
               <BookingChatPanel
                 bookingId={booking.id}
@@ -531,6 +566,7 @@ export function ProfessionalBookingDetailsScreen() {
               {['PAYMENT_PENDING', 'PAID', 'CLOSED'].includes(booking.status) ? (
                 <ProfessionalPaymentPanel bookingId={booking.id} />
               ) : null}
+              <DisputePanel bookingId={booking.id} />
             </View>
           )}
         </View>

@@ -11,3 +11,7 @@ apps/frontend/dist
 apps/frontend/web-build
 backend/api/dist
 packages/*/dist
+
+# Local generated audit report. A working document, not project documentation,
+# and not part of the repository.
+HELPZY_FINAL_AUDIT.md

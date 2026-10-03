@@ -43,22 +43,42 @@ export function to24Hour(hour12: number, period: 'AM' | 'PM'): number {
  * equivalents and are measured against the same element, so trying them second
  * makes one code path work on native and on web.
  *
- * Returns null when neither is available, so callers can ignore the event
- * instead of computing from `undefined` and producing NaN coordinates.
+ * Returns null when none is available, so callers can ignore the event instead of
+ * computing from `undefined` and producing NaN coordinates.
  */
-function pressPoint(event: { nativeEvent?: unknown }): { x: number; y: number } | null {
+function pressPoint(event: {
+  nativeEvent?: unknown;
+  currentTarget?: { getBoundingClientRect?: () => { left: number; top: number } } | null;
+}): { x: number; y: number } | null {
   const e = (event.nativeEvent ?? {}) as Record<string, unknown>;
-  const read = (a: string, b: string): number | null => {
-    const primary = e[a];
-    if (typeof primary === 'number' && Number.isFinite(primary)) return primary;
-    const secondary = e[b];
-    if (typeof secondary === 'number' && Number.isFinite(secondary)) return secondary;
-    return null;
+  const numberAt = (key: string): number | null => {
+    const value = e[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
   };
-  const x = read('locationX', 'offsetX');
-  const y = read('locationY', 'offsetY');
-  if (x === null || y === null) return null;
-  return { x, y };
+
+  const locationX = numberAt('locationX');
+  const locationY = numberAt('locationY');
+  if (locationX !== null && locationY !== null) return { x: locationX, y: locationY };
+
+  const offsetX = numberAt('offsetX');
+  const offsetY = numberAt('offsetY');
+  if (offsetX !== null && offsetY !== null) return { x: offsetX, y: offsetY };
+
+  /*
+   * Last resort, and the one that matters most on web during a drag: a move
+   * event carries only page coordinates, so they have to be rebased onto the
+   * dial's own rectangle. Doing this from the rect rather than assuming the
+   * dial sits at the origin is what keeps the hand under the pointer when the
+   * picker is scrolled or opened lower down the page.
+   */
+  const clientX = numberAt('clientX') ?? numberAt('pageX');
+  const clientY = numberAt('clientY') ?? numberAt('pageY');
+  const rect = event.currentTarget?.getBoundingClientRect?.();
+  if (clientX !== null && clientY !== null && rect) {
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  return null;
 }
 
 export function formatDisplayTime(hour: number, minute: number, period: 'AM' | 'PM'): string {
@@ -145,10 +165,7 @@ function ClockDial({
       accessibilityRole="adjustable"
       accessibilityLabel={isHour ? 'Select hour' : 'Select minute'}
       accessibilityValue={{ now: value, min: isHour ? 1 : 0, max: total - 1 }}
-      accessibilityActions={[
-        { name: 'increment' },
-        { name: 'decrement' },
-      ]}
+      accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
       onAccessibilityAction={(event) => {
         if (event.nativeEvent.actionName === 'increment') stepBy(1);
         if (event.nativeEvent.actionName === 'decrement') stepBy(-1);
@@ -167,6 +184,26 @@ function ClockDial({
         apply(pressPoint(event));
       }}
       onPressOut={() => setDragging(false)}
+      /*
+       * The press callbacks above are the happy path on native, but on web a
+       * mouse drag does not reliably raise `onPressMove`, so the hand stopped
+       * following the pointer and only the initial click registered. The
+       * responder system is implemented on both platforms, so it carries the
+       * drag; `apply` is idempotent, so a gesture that raises both sets the
+       * same value twice rather than fighting itself.
+       */
+      onStartShouldSetResponder={() => true}
+      onMoveShouldSetResponder={() => dragging}
+      onResponderGrant={(event) => {
+        setDragging(true);
+        apply(pressPoint(event));
+      }}
+      onResponderMove={(event) => {
+        if (!dragging) return;
+        apply(pressPoint(event));
+      }}
+      onResponderRelease={() => setDragging(false)}
+      onResponderTerminate={() => setDragging(false)}
       className="items-center justify-center self-center rounded-full"
       style={{ width: DIAL_SIZE, height: DIAL_SIZE }}
     >

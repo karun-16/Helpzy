@@ -5,3 +5,4 @@ export * from './customer-discovery';
 export * from './customer-bookings';
 export * from './professional-bookings';
 export * from './marketplace';
+export * from './platform-settings';

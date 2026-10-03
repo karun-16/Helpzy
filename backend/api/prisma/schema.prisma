@@ -51,6 +51,10 @@ enum BookingStatus {
   REJECTED
   CANCELLED
   DISPUTED
+  /// The job is under way but one party has asked to move the appointment and is
+  /// waiting for the other's agreement. The original slot stays confirmed and the
+  /// job pauses here, so an unanswered proposal never silently loses the booking.
+  RESCHEDULE_PENDING
 }
 
 enum PaymentStatus {
@@ -59,11 +63,17 @@ enum PaymentStatus {
   PAID
   FAILED
   REFUNDED
+  /// A recorded payment one of the parties disputes. Held rather than refunded so
+  /// an admin can look at the evidence before the money is moved.
+  DISPUTED
 }
 
 enum PaymentMethod {
   ONLINE
   DIRECT
+  /// Handed over in person. Distinct from DIRECT because it needs a confirmation
+  /// from both parties rather than only the professional's receipt.
+  CASH
 }
 
 enum ReviewStatus {
@@ -90,10 +100,72 @@ enum NotificationType {
   PAYMENT_PENDING
   PAYMENT_PAID
   PAYMENT_FAILED
+  PAYMENT_REFUNDED
   BOOKING_CANCELLED
+  BOOKING_RESCHEDULE_REQUESTED
+  BOOKING_RESCHEDULE_ACCEPTED
+  BOOKING_RESCHEDULE_REJECTED
+  BOOKING_RESCHEDULE_WITHDRAWN
+  COMPLETION_AWAITING_CUSTOMER
+  COMPLETION_AWAITING_PROFESSIONAL
+  PAYMENT_METHOD_SELECTED
+  PAYMENT_AWAITING_BOTH
   REVIEW_RECEIVED
   VERIFICATION_DECISION
+  DISPUTE_OPENED
+  DISPUTE_UPDATED
+  DISPUTE_RESOLVED
+  REPORT_FILED_ABOUT_YOU
   SYSTEM
+}
+
+enum ReportTargetType {
+  PROFESSIONAL
+  SERVICE
+  BOOKING
+  REVIEW
+}
+
+enum ReportReason {
+  INAPPROPRIATE_CONTENT
+  FRAUD_OR_SCAM
+  HARASSMENT
+  MISLEADING_LISTING
+  UNSAFE_OR_UNPROFESSIONAL
+  NO_SHOW
+  PAYMENT_ISSUE
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum DisputeCategory {
+  SERVICE_NOT_AS_DESCRIBED
+  NO_SHOW
+  QUALITY_ISSUE
+  PROPERTY_DAMAGE
+  PAYMENT_ISSUE
+  UNSAFE_BEHAVIOUR
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum DisputeEventType {
+  OPENED
+  MESSAGE
+  STATUS_CHANGE
+  RESOLUTION
 }
 
 enum AuditEntityType {
@@ -105,6 +177,10 @@ enum AuditEntityType {
   PAYMENT
   REVIEW
   NOTIFICATION
+  REPORT
+  DISPUTE
+  VERIFICATION_DOCUMENT
+  PLATFORM_SETTING
 }
 
 model User {
@@ -119,17 +195,33 @@ model User {
   createdAt    DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
 
-  customerProfile     CustomerProfile?
-  professionalProfile ProfessionalProfile?
-  addresses           Address[]
-  bookingsAsCustomer  Booking[]        @relation("BookingCustomer")
-  bookingStatusChanges BookingStatusHistory[] @relation("BookingStatusActor")
-  services            Service[]        @relation("ServiceOwner")
-  reviewsWritten      Review[]         @relation("ReviewAuthor")
-  notifications       Notification[]
-  auditLogs           AuditLog[]       @relation("AuditActor")
-  sentMessages        BookingMessage[] @relation("MessageSender")
-  uploadedMedia       MediaAsset[]     @relation("MediaOwner")
+  customerProfile                 CustomerProfile?
+  professionalProfile             ProfessionalProfile?
+  addresses                       Address[]
+  bookingsAsCustomer              Booking[]                    @relation("BookingCustomer")
+  bookingStatusChanges            BookingStatusHistory[]       @relation("BookingStatusActor")
+  services                        Service[]                    @relation("ServiceOwner")
+  reviewsWritten                  Review[]                     @relation("ReviewAuthor")
+  notifications                   Notification[]
+  auditLogs                       AuditLog[]                   @relation("AuditActor")
+  sentMessages                    BookingMessage[]             @relation("MessageSender")
+  uploadedMedia                   MediaAsset[]                 @relation("MediaOwner")
+  reportsFiled                    Report[]                     @relation("ReportReporter")
+  reportsAgainst                  Report[]                     @relation("ReportTargetOwner")
+  reportsResolved                 Report[]                     @relation("ReportResolver")
+  disputesOpened                  Dispute[]                    @relation("DisputeOpener")
+  disputesAgainst                 Dispute[]                    @relation("DisputeAgainst")
+  disputesResolved                Dispute[]                    @relation("DisputeResolver")
+  disputeEvents                   DisputeEvent[]
+  rescheduleRequests              RescheduleRequest[]          @relation("RescheduleRequestedBy")
+  rescheduleDecisions             RescheduleRequest[]          @relation("RescheduleDecidedBy")
+  bookingsCompletedAsProfessional Booking[]                    @relation("BookingCompletedByProfessional")
+  bookingsCompletedAsCustomer     Booking[]                    @relation("BookingCompletedByCustomer")
+  documentReviews                 VerificationDocumentReview[]
+  documentReviewsMade             VerificationDocument[]       @relation("VerificationDocumentReviewer")
+  cashPaymentsConfirmed           Payment[]                    @relation("PaymentCashConfirmedByCustomer")
+cashReceiptsConfirmed           Payment[]                     @relation("PaymentCashConfirmedByProfessional")
+  platformSettingsUpdates         PlatformSetting[]
 
   @@index([role, status])
   @@map("users")
@@ -140,16 +232,16 @@ model User {
 /// The bytes live behind a `MediaStorageProvider`; this row records only the
 /// provider key and the public URL that key resolves to.
 model MediaAsset {
-  id           String   @id @default(uuid()) @db.Uuid
-  ownerUserId  String   @db.Uuid
-  kind         String
-  provider     String
-  storageKey   String
-  publicUrl    String
-  contentType  String
-  byteSize     Int
-  createdAt    DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+  id          String   @id @default(uuid()) @db.Uuid
+  ownerUserId String   @db.Uuid
+  kind        String
+  provider    String
+  storageKey  String
+  publicUrl   String
+  contentType String
+  byteSize    Int
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
 
   owner User @relation("MediaOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
 
@@ -190,22 +282,23 @@ model ProfessionalProfile {
   contactEmail      String?
   /// Phone is the login identity and is never copied here; the professional
   /// only controls whether customers may see it.
-  isPhoneVisible    Boolean           @default(false)
+  isPhoneVisible    Boolean @default(false)
   /// `[{ "day": 1, "start": "09:00", "end": "18:00" }]` with `day` 0=Sun..6=Sat.
   workingHours      Json?
 
   /// Last position reported by the professional's own device while location
   /// sharing is on. Never populated without an explicit device update.
   isLocationSharingEnabled Boolean   @default(false)
-  lastKnownLatitude        Decimal? @db.Decimal(9, 6)
-  lastKnownLongitude       Decimal? @db.Decimal(9, 6)
+  lastKnownLatitude        Decimal?  @db.Decimal(9, 6)
+  lastKnownLongitude       Decimal?  @db.Decimal(9, 6)
   locationUpdatedAt        DateTime? @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bookings Booking[] @relation("BookingProfessional")
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings              Booking[]              @relation("BookingProfessional")
+  verificationDocuments VerificationDocument[]
 
   @@map("professional_profiles")
 }
@@ -228,21 +321,31 @@ model ServiceCategory {
 }
 
 model Service {
-  id             String   @id @default(uuid()) @db.Uuid
-  ownerId        String   @db.Uuid
-  categoryId     String   @db.Uuid
-  title          String
-  slug           String   @unique
-  summary        String?
-  description    String
-  basePrice      Decimal  @db.Decimal(10, 2)
-  currency       String   @default("INR") @db.Char(3)
-  durationMinutes Int     @default(60)
-  isActive       Boolean  @default(true)
-  averageRating  Decimal  @default(0) @db.Decimal(3, 2)
-  ratingCount    Int      @default(0)
-  createdAt      DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+  id              String    @id @default(uuid()) @db.Uuid
+  ownerId         String    @db.Uuid
+  categoryId      String    @db.Uuid
+  title           String
+  slug            String    @unique
+  summary         String?
+  description     String
+  basePrice       Decimal   @db.Decimal(10, 2)
+  currency        String    @default("INR") @db.Char(3)
+  durationMinutes Int       @default(60)
+  isActive        Boolean   @default(true)
+  /// Where the listing sits in moderation. `APPROVED` is the default so
+  /// every listing that predates moderation stays live; a listing created
+  /// while the platform requires moderation before publish starts `PENDING`
+  /// and is only shown once an admin approves it.
+  moderationStatus String   @default("APPROVED") @db.VarChar(32)
+  /// Why an admin withdrew this listing, shown to the professional so a hidden
+  /// service is never a mystery. Cleared when the listing is restored.
+  moderationNote  String?   @db.VarChar(500)
+  /// When the current active/inactive state was last set by a moderator.
+  moderatedAt     DateTime? @db.Timestamptz(3)
+  averageRating   Decimal   @default(0) @db.Decimal(3, 2)
+  ratingCount     Int       @default(0)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 
   owner    User            @relation("ServiceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   category ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
@@ -278,33 +381,54 @@ model Address {
 }
 
 model Booking {
-  id                String        @id @default(uuid()) @db.Uuid
-  reference         String        @unique
-  customerId        String        @db.Uuid
-  professionalId    String        @db.Uuid
-  serviceId         String        @db.Uuid
-  addressId         String?       @db.Uuid
-  status            BookingStatus @default(REQUESTED)
-  scheduledStart    DateTime      @db.Timestamptz(3)
-  scheduledEnd      DateTime      @db.Timestamptz(3)
-  priceAmount       Decimal       @db.Decimal(10, 2)
-  currency          String        @default("INR") @db.Char(3)
-  customerNote      String?
-  cancellationNote  String?
-  cancelledAt       DateTime?     @db.Timestamptz(3)
-  completedAt       DateTime?     @db.Timestamptz(3)
-  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+  id               String        @id @default(uuid()) @db.Uuid
+  reference        String        @unique
+  customerId       String        @db.Uuid
+  professionalId   String        @db.Uuid
+  serviceId        String        @db.Uuid
+  addressId        String?       @db.Uuid
+  status           BookingStatus @default(REQUESTED)
+  scheduledStart   DateTime      @db.Timestamptz(3)
+  scheduledEnd     DateTime      @db.Timestamptz(3)
+  priceAmount      Decimal       @db.Decimal(10, 2)
+  currency         String        @default("INR") @db.Char(3)
+  customerNote     String?
+  cancellationNote String?
+  cancelledAt      DateTime?     @db.Timestamptz(3)
+  completedAt      DateTime?     @db.Timestamptz(3)
+  createdAt        DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime      @updatedAt @db.Timestamptz(3)
 
-  customer     User                @relation("BookingCustomer", fields: [customerId], references: [id], onDelete: Restrict)
-  professional ProfessionalProfile @relation("BookingProfessional", fields: [professionalId], references: [id], onDelete: Restrict)
-  service      Service             @relation(fields: [serviceId], references: [id], onDelete: Restrict)
-  address      Address?            @relation(fields: [addressId], references: [id], onDelete: SetNull)
-  payment      Payment?
-  review       Review?
-  statusHistory BookingStatusHistory[]
-  messages     BookingMessage[]
-  notifications Notification[]
+  /// Mutual completion. Each side is recorded with who did it and when, so the
+  /// booking can be settled on evidence rather than on the current status alone.
+  completedByProfessionalId String?   @db.Uuid
+  completedByProfessionalAt DateTime? @db.Timestamptz(3)
+  completedByCustomerId     String?   @db.Uuid
+  completedByCustomerAt     DateTime? @db.Timestamptz(3)
+
+  /// The most recent reschedule proposal, retained after it is decided so both
+  /// parties and an admin can see what was asked for and what was agreed.
+  /// Unique, so at most one proposal is ever the live one.
+  rescheduleRequestId    String?        @unique @db.Uuid
+  /// The status the booking held when a reschedule was proposed, so accepting
+  /// can return it to exactly where the job was rather than guessing.
+  rescheduleReturnStatus BookingStatus?
+
+  customer           User                   @relation("BookingCustomer", fields: [customerId], references: [id], onDelete: Restrict)
+  professional       ProfessionalProfile    @relation("BookingProfessional", fields: [professionalId], references: [id], onDelete: Restrict)
+  service            Service                @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  address            Address?               @relation(fields: [addressId], references: [id], onDelete: SetNull)
+  payment            Payment?
+  review             Review?
+  statusHistory      BookingStatusHistory[]
+  messages           BookingMessage[]
+  notifications      Notification[]
+  disputes           Dispute[]
+  rescheduleRequests RescheduleRequest[]
+
+  completedByProfessional User?              @relation("BookingCompletedByProfessional", fields: [completedByProfessionalId], references: [id], onDelete: SetNull)
+  completedByCustomer     User?              @relation("BookingCompletedByCustomer", fields: [completedByCustomerId], references: [id], onDelete: SetNull)
+  rescheduleRequest       RescheduleRequest? @relation("BookingActiveReschedule", fields: [rescheduleRequestId], references: [id], onDelete: SetNull)
 
   // A professional cannot hold two live bookings for the same slot.
   @@unique([professionalId, scheduledStart], map: "bookings_professional_slot_key")
@@ -315,13 +439,61 @@ model Booking {
   @@map("bookings")
 }
 
+/// A proposed new appointment time, either side can raise and the other decides.
+///
+/// Append-only history: a rejected or superseded proposal is kept, never edited,
+/// so a booking's timeline shows every time the schedule was argued over. The
+/// booking's own `scheduledStart` only changes once a proposal is accepted.
+model RescheduleRequest {
+  id            String           @id @default(uuid()) @db.Uuid
+  bookingId     String           @db.Uuid
+  requestedById String           @db.Uuid
+  previousStart DateTime         @db.Timestamptz(3)
+  previousEnd   DateTime         @db.Timestamptz(3)
+  proposedStart DateTime         @db.Timestamptz(3)
+  proposedEnd   DateTime         @db.Timestamptz(3)
+  reason        String?          @db.VarChar(500)
+  status        RescheduleStatus @default(PENDING)
+  /// Required when the proposal is rejected, for the same reason an admin
+  /// rejection needs one: an unexplained "no" is not actionable.
+  decisionNote  String?          @db.VarChar(500)
+  decidedById   String?          @db.Uuid
+  decidedAt     DateTime?        @db.Timestamptz(3)
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(3)
+
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  requestedBy User     @relation("RescheduleRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy   User?    @relation("RescheduleDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  /// The booking that accepted this proposal points back at it, so at most one
+  /// proposal is ever the live one.
+  activeFor   Booking? @relation("BookingActiveReschedule")
+
+  @@index([bookingId, createdAt])
+  @@index([status, createdAt])
+  @@map("reschedule_requests")
+}
+
+enum RescheduleStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  /// Withdrawn by the party who raised it, usually because the other side agreed
+  /// in conversation first.
+  WITHDRAWN
+}
+
 model BookingStatusHistory {
-  id          String        @id @default(uuid()) @db.Uuid
-  bookingId   String        @db.Uuid
+  id          String         @id @default(uuid()) @db.Uuid
+  bookingId   String         @db.Uuid
   fromStatus  BookingStatus?
   toStatus    BookingStatus
-  actorUserId String        @db.Uuid
-  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  actorUserId String         @db.Uuid
+  /// True when an administrator forced this change rather than the normal flow
+  /// reaching it. The timeline says so explicitly rather than leaving an admin
+  /// indistinguishable from the professional.
+  isOverride  Boolean        @default(false)
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   actor   User    @relation("BookingStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict)
@@ -330,42 +502,162 @@ model BookingStatusHistory {
   @@map("booking_status_history")
 }
 
+/// A complaint about a professional, listing, booking or review.
+///
+/// `targetId` is polymorphic rather than a relation, because one submission path
+/// has to cover four different tables. The reporting service resolves and
+/// validates it against `targetType` before the row is written, and it also
+/// records the resolved `targetOwnerId` so "reports about this professional" is a
+/// query rather than four separate ones.
+model Report {
+  id               String           @id @default(uuid()) @db.Uuid
+  reporterId       String           @db.Uuid
+  targetType       ReportTargetType
+  targetId         String           @db.Uuid
+  /// The user the report is ultimately about, captured at filing time.
+  targetOwnerId    String           @db.Uuid
+  reason           ReportReason
+  description      String           @db.VarChar(2000)
+  status           ReportStatus     @default(OPEN)
+  /// Why an admin closed the report. Required when it reaches a terminal state.
+  resolutionNote   String?          @db.VarChar(1000)
+  /// What the admin did about the reported content, e.g. `LISTING_WITHDRAWN`.
+  resolutionAction String?          @db.VarChar(100)
+  resolvedById     String?          @db.Uuid
+  resolvedAt       DateTime?        @db.Timestamptz(3)
+  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @db.Timestamptz(3)
+
+  reporter    User  @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetOwner User  @relation("ReportTargetOwner", fields: [targetOwnerId], references: [id], onDelete: Cascade)
+  resolvedBy  User? @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  /// One open report per user per target, so a double-tap cannot bury the queue.
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@index([targetOwnerId, status])
+  @@index([reporterId, createdAt])
+  @@map("reports")
+}
+
+/// A formal challenge to a booking, raised by one of its two participants.
+///
+/// Bound to exactly one booking and closed with it: a dispute cannot outlive the
+/// work it concerns, and it never changes the booking's price or schedule. Its
+/// entire history lives in `DisputeEvent` so an admin resolving it sees the same
+/// sequence the parties did.
+model Dispute {
+  id                         String          @id @default(uuid()) @db.Uuid
+  bookingId                  String          @db.Uuid
+  openedById                 String          @db.Uuid
+  /// The other participant: the counterparty for the customer, the customer for
+  /// the professional.
+  againstId                  String          @db.Uuid
+  category                   DisputeCategory
+  reason                     String          @db.VarChar(2000)
+  status                     DisputeStatus   @default(OPEN)
+  /// The booking's status before it was suspended, restored when the dispute
+  /// closes. Recorded rather than inferred so a resolution cannot put a booking
+  /// back somewhere it never actually was.
+  bookingStatusBeforeDispute String?         @db.VarChar(32)
+  resolutionNote             String?         @db.VarChar(2000)
+  resolvedById               String?         @db.Uuid
+  resolvedAt                 DateTime?       @db.Timestamptz(3)
+  createdAt                  DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime        @updatedAt @db.Timestamptz(3)
+
+  booking    Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  openedBy   User           @relation("DisputeOpener", fields: [openedById], references: [id], onDelete: Restrict)
+  against    User           @relation("DisputeAgainst", fields: [againstId], references: [id], onDelete: Restrict)
+  resolvedBy User?          @relation("DisputeResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  events     DisputeEvent[]
+
+  /// At most one live dispute per booking; a closed one does not block a new one.
+  @@index([bookingId])
+  @@index([status, createdAt])
+  @@index([againstId, status])
+  @@map("disputes")
+}
+
+/// Append-only entry in a dispute's history.
+model DisputeEvent {
+  id         String           @id @default(uuid()) @db.Uuid
+  disputeId  String           @db.Uuid
+  actorId    String           @db.Uuid
+  type       DisputeEventType
+  /// Null for a status change, which is described by the pair of statuses below.
+  body       String?          @db.VarChar(2000)
+  fromStatus DisputeStatus?
+  toStatus   DisputeStatus?
+  createdAt  DateTime         @default(now()) @db.Timestamptz(3)
+
+  dispute Dispute @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  actor   User    @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([disputeId, createdAt])
+  @@map("dispute_events")
+}
+
 model Payment {
-  id                String        @id @default(uuid()) @db.Uuid
-  bookingId         String        @unique @db.Uuid
-  amount            Decimal       @db.Decimal(10, 2)
-  currency          String        @default("INR") @db.Char(3)
-  method            PaymentMethod @default(ONLINE)
-  status            PaymentStatus @default(PENDING)
-  provider          String?
-  providerReference String?
-  failureReason     String?
-  paidAt            DateTime?     @db.Timestamptz(3)
-  refundedAt        DateTime?     @db.Timestamptz(3)
-  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+  id                   String        @id @default(uuid()) @db.Uuid
+  bookingId            String        @unique @db.Uuid
+  amount               Decimal       @db.Decimal(10, 2)
+  currency             String        @default("INR") @db.Char(3)
+  method               PaymentMethod @default(ONLINE)
+  status               PaymentStatus @default(PENDING)
+  provider             String?
+  providerReference    String?
+  failureReason        String?
+  paidAt               DateTime?     @db.Timestamptz(3)
+  refundedAt           DateTime?     @db.Timestamptz(3)
+  /// The gateway transaction reference, kept separate from `providerReference`
+  /// so finance can tell which value came from the provider's API.
+  gatewayTransactionId String?
+  /// The instrument the customer chose inside the gateway, e.g. `UPI`, `CARD`.
+  gatewayMethod        String?
+  /// True only when a verified gateway callback settled this payment. A payment
+  /// a party merely claimed to have made is recorded, but never verified, and
+  /// the admin view is able to show that difference.
+  gatewayVerified      Boolean       @default(false)
+
+  /// Cash is a claim by two parties, so both are recorded independently. `paidAt`
+  /// is only set once they agree, which is why one confirmation alone must never
+  /// settle the booking.
+  cashConfirmedByCustomerId     String?   @db.Uuid
+  cashConfirmedByCustomerAt     DateTime? @db.Timestamptz(3)
+  cashConfirmedByProfessionalId String?   @db.Uuid
+  cashConfirmedByProfessionalAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  cashConfirmedByCustomer     User? @relation("PaymentCashConfirmedByCustomer", fields: [cashConfirmedByCustomerId], references: [id], onDelete: SetNull)
+  cashConfirmedByProfessional User? @relation("PaymentCashConfirmedByProfessional", fields: [cashConfirmedByProfessionalId], references: [id], onDelete: SetNull)
 
   /// Provider attempts, newest last. Keeps the audit trail for a payment that
   /// was retried without overwriting the previous provider reference.
   attempts PaymentAttempt[]
 
   @@index([status, createdAt])
+  /// Every gateway callback resolves its payment by this column, including the
+  /// retries gateways send routinely.
+  @@index([gatewayTransactionId])
   @@map("payments")
 }
 
 /// One record per interaction with a payment provider (or with the manual
 /// direct-payment path). Append-only.
 model PaymentAttempt {
-  id          String        @id @default(uuid()) @db.Uuid
-  paymentId   String        @db.Uuid
-  method      PaymentMethod
-  status      PaymentStatus
-  provider    String?
-  reference   String?
-  note        String?
-  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
+  id        String        @id @default(uuid()) @db.Uuid
+  paymentId String        @db.Uuid
+  method    PaymentMethod
+  status    PaymentStatus
+  provider  String?
+  reference String?
+  note      String?
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
@@ -374,17 +666,17 @@ model PaymentAttempt {
 }
 
 model Review {
-  id            String       @id @default(uuid()) @db.Uuid
-  bookingId     String       @unique @db.Uuid
-  serviceId     String       @db.Uuid
-  customerId    String       @db.Uuid
-  rating        Int
-  comment       String?
-  status        ReviewStatus @default(PENDING)
-  moderatedBy   String?      @db.Uuid
-  moderatedAt   DateTime?    @db.Timestamptz(3)
-  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime     @updatedAt @db.Timestamptz(3)
+  id          String       @id @default(uuid()) @db.Uuid
+  bookingId   String       @unique @db.Uuid
+  serviceId   String       @db.Uuid
+  customerId  String       @db.Uuid
+  rating      Int
+  comment     String?
+  status      ReviewStatus @default(PENDING)
+  moderatedBy String?      @db.Uuid
+  moderatedAt DateTime?    @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
 
   booking  Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   service  Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -439,6 +731,124 @@ model Notification {
   @@unique([dedupeKey], map: "notifications_dedupe_key_key")
   @@index([userId, readAt, createdAt])
   @@map("notifications")
+}
+
+/// A document a professional submits to be verified.
+///
+/// The bytes are private: they live behind the media storage provider and are
+/// only ever read back through an authorised endpoint, never from a public path.
+/// Uploading a document deliberately does **not** verify a professional - only an
+/// admin decision does - so a submission can never grant itself a badge.
+model VerificationDocument {
+  id              String                     @id @default(uuid()) @db.Uuid
+  professionalId  String                     @db.Uuid
+  type            VerificationDocumentType
+  /// Storage provider key. Private by construction: it is never turned into a
+  /// public URL the way a profile photo is.
+  storageKey      String
+  provider        String
+  contentType     String
+  byteSize        Int
+  /// The declared original filename, kept for the admin's own recognition only.
+  /// It is never echoed into a response body or a path.
+  originalName    String?                    @db.VarChar(255)
+  status          VerificationDocumentStatus @default(PENDING)
+  /// Required when the status is `REJECTED`, so a professional always knows what
+  /// to fix rather than being refused without explanation.
+  rejectionReason String?                    @db.VarChar(1000)
+  submittedAt     DateTime                   @default(now()) @db.Timestamptz(3)
+  reviewedAt      DateTime?                  @db.Timestamptz(3)
+  reviewedById    String?                    @db.Uuid
+  createdAt       DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime                   @updatedAt @db.Timestamptz(3)
+
+  professional ProfessionalProfile          @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  reviewedBy   User?                        @relation("VerificationDocumentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviews      VerificationDocumentReview[]
+
+  /// A professional has at most one live document of each type; resubmitting
+  /// supersedes the previous attempt rather than creating a competing one.
+  @@index([professionalId, type, status])
+  @@index([status, submittedAt])
+  @@map("verification_documents")
+}
+
+enum VerificationDocumentType {
+  AADHAAR
+  PAN
+  GST_CERTIFICATE
+  BUSINESS_LICENCE
+  INSURANCE
+  OTHER
+}
+
+enum VerificationDocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// One admin decision on one document submission.
+///
+/// Append-only, so a professional's review history shows every decision ever
+/// made on their file, not just the most recent outcome.
+model VerificationDocumentReview {
+  id         String                     @id @default(uuid()) @db.Uuid
+  documentId String                     @db.Uuid
+  reviewerId String                     @db.Uuid
+  decision   VerificationDocumentStatus
+  note       String?                    @db.VarChar(1000)
+  createdAt  DateTime                   @default(now()) @db.Timestamptz(3)
+
+  document VerificationDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  reviewer User                 @relation(fields: [reviewerId], references: [id], onDelete: Restrict)
+
+  @@index([documentId, createdAt])
+  @@map("verification_document_reviews")
+}
+
+/// Records the gateway events already handled, so a retried webhook is a no-op.
+///
+/// The gateway's own event id is the key. Without this a retry - which gateways
+/// do routinely send - would apply the same payment twice.
+model PaymentWebhookEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  providerEventId String   @unique
+  provider        String
+  paymentId       String?  @db.Uuid
+  outcome         String
+  receivedAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([provider, receivedAt])
+  @@map("payment_webhook_events")
+}
+
+/// Platform-wide rules an admin can change while the system is running.
+///
+/// Stored as one row holding the whole settings document rather than one row per
+/// setting. Two reasons, both about correctness rather than tidiness:
+///
+/// - A settings change is all-or-nothing. Half of a booking policy is not a
+///   policy; splitting it across rows would let an admin save a contradictory
+///   combination that no single request could have produced.
+/// - Every read gets the whole document, so the per-request enforcement cost is
+///   one cache hit instead of a scatter-gather over keys.
+///
+/// `document` is validated against the settings schema on every write, so the
+/// database never holds a shape the application cannot read.
+model PlatformSetting {
+  /// Always `MAIN`; the value is fixed so an accidental second row is a
+  /// constraint violation rather than a silently ignored duplicate.
+  id      String @id @default("MAIN")
+  /// The full validated settings document.
+  document Json
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  /// The admin who last saved. Kept nullable so deleting an admin does not block.
+  updatedById String?               @db.Uuid
+  updatedBy   User?                 @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("platform_settings")
 }
 
 /// Append-only record of privileged actions, for the admin audit view.

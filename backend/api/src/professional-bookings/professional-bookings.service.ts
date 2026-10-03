@@ -8,6 +8,7 @@ import {
 import {
   professionalJobsSchema,
   type BookingTimelineEntryDto,
+  type CompletionStateDto,
   type ProfessionalBookingDto,
   type ProfessionalJobsDto,
 } from '@helpzy/validation';
@@ -176,6 +177,61 @@ export class ProfessionalBookingsService {
   }
 
   /**
+   * The professional's half of mutual completion, recording who confirmed and
+   * when.
+   *
+   * Routed through the shared lifecycle so the ordering rule, the status history
+   * and the notification behave exactly as for every other step. A repeated
+   * confirmation is a no-op rather than an error.
+   */
+  async markCompleted(
+    userId: string,
+    bookingId: string,
+    note?: string,
+  ): Promise<CompletionStateDto> {
+    const profile = await this.getProfessionalProfile(userId);
+    await this.requireOwnBooking(profile.id, bookingId);
+
+    await this.lifecycle.applyCompletionConfirmation({
+      bookingId,
+      actorUserId: userId,
+      actorRole: 'PROFESSIONAL',
+      ...(note !== undefined ? { note } : {}),
+    });
+    return this.completionState(userId, bookingId);
+  }
+
+  /** Who has confirmed completion, and whether it is the professional's turn. */
+  async completionState(userId: string, bookingId: string): Promise<CompletionStateDto> {
+    const profile = await this.getProfessionalProfile(userId);
+    const booking = await this.prisma.booking.findFirst({
+      where: { id: bookingId, professionalId: profile.id },
+      select: {
+        status: true,
+        completedByProfessionalId: true,
+        completedByProfessionalAt: true,
+        completedByCustomerAt: true,
+        completedByProfessional: { select: { fullName: true } },
+        completedByCustomer: { select: { fullName: true } },
+      },
+    });
+    if (!booking) throw this.notFound();
+
+    const isComplete =
+      Boolean(booking.completedByProfessionalAt) && Boolean(booking.completedByCustomerAt);
+
+    return {
+      status: booking.status,
+      professionalConfirmedAt: booking.completedByProfessionalAt?.toISOString() ?? null,
+      professionalConfirmedByName: booking.completedByProfessional?.fullName ?? null,
+      customerConfirmedAt: booking.completedByCustomerAt?.toISOString() ?? null,
+      customerConfirmedByName: booking.completedByCustomer?.fullName ?? null,
+      isComplete,
+      awaitingViewerConfirmation: !isComplete && booking.completedByProfessionalId !== userId,
+    };
+  }
+
+  /**
    * Advances an accepted booking one step along the professional-controlled
    * lifecycle. Ownership and the allowed source status are both resolved from
    * the authenticated user, never from the request body.
@@ -218,6 +274,19 @@ export class ProfessionalBookingsService {
     const profile = await this.professionalProfileOrNull(userId);
     if (!profile) throw this.notFound();
     return profile;
+  }
+
+  /**
+   * Proves a booking belongs to this professional before it is acted on, so a
+   * completion can never be recorded against somebody else's job.
+   */
+  private async requireOwnBooking(professionalId: string, bookingId: string) {
+    const booking = await this.prisma.booking.findFirst({
+      where: { id: bookingId, professionalId },
+      select: { id: true },
+    });
+    if (!booking) throw this.notFound();
+    return booking;
   }
 
   private toDto(booking: BookingRecord): ProfessionalBookingDto {

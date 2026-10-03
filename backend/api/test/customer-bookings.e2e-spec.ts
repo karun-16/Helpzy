@@ -21,7 +21,11 @@ type LifecycleStatus =
   | 'ON_THE_WAY'
   | 'IN_PROGRESS'
   | 'COMPLETED_BY_PROFESSIONAL'
-  | 'CUSTOMER_CONFIRMED';
+  | 'CUSTOMER_CONFIRMED'
+  | 'PAYMENT_PENDING'
+  | 'PAID'
+  | 'CLOSED'
+  | 'CANCELLED';
 
 type StoredBooking = {
   id: string;
@@ -31,12 +35,16 @@ type StoredBooking = {
   scheduledStart: Date;
   createdAt: Date;
   customerNote: string;
+  completedByProfessionalId: string | null;
+  completedByProfessionalAt: Date | null;
+  completedByCustomerId: string | null;
+  completedByCustomerAt: Date | null;
   service: { id: string; title: string };
   customer: { id: string; fullName: string };
   professional: {
     id: string;
     userId: string;
-    user: { fullName: string };
+    user: { id: string; fullName: string };
     businessName: string;
   };
   address: {
@@ -325,7 +333,8 @@ describe('Customer bookings (e2e)', () => {
       );
       expect(prisma.booking.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: BOOKING_ID, customerId: CUSTOMER_ID, status: 'COMPLETED_BY_PROFESSIONAL' },
+          where: { id: BOOKING_ID, status: 'COMPLETED_BY_PROFESSIONAL' },
+          data: expect.objectContaining({ completedByCustomerId: CUSTOMER_ID }),
         }),
       );
     });
@@ -344,17 +353,20 @@ describe('Customer bookings (e2e)', () => {
       expect(inProgress.status).toBe('IN_PROGRESS');
     });
 
-    it('rejects confirming a booking that was already confirmed', async () => {
+    it('treats confirming an already confirmed booking as a no-op', async () => {
       const confirmed = createStoredBooking('CUSTOMER_CONFIRMED');
       primeBookingLookup(confirmed);
 
+      // A double tap is harmless: the confirmation is already recorded, so
+      // the booking is left exactly as it was.
       await request(app.getHttpServer())
         .post(`/api/v1/customer/bookings/${BOOKING_ID}/confirm`)
         .set('Authorization', `Bearer ${customerToken}`)
-        .expect(409);
+        .expect(201);
 
       expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
       expect(confirmed.status).toBe('CUSTOMER_CONFIRMED');
+      expect(confirmed.completedByCustomerId).toBe(CUSTOMER_ID);
     });
 
     it("hides and rejects confirmation of another customer's booking", async () => {
@@ -417,6 +429,139 @@ describe('Customer bookings (e2e)', () => {
     });
   });
 
+  describe('customer cancellation', () => {
+    it('cancels an eligible booking and records the transition', async () => {
+      const requested = createStoredBooking('REQUESTED');
+      primeBookingLookup(requested);
+
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(201);
+
+      expect(response.body.data.status).toBe('CANCELLED');
+      expect(prisma.bookingStatusHistory.create).toHaveBeenCalledWith({
+        data: {
+          bookingId: BOOKING_ID,
+          fromStatus: 'REQUESTED',
+          toStatus: 'CANCELLED',
+          actorUserId: CUSTOMER_ID,
+        },
+      });
+      expect(prisma.notification.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects cancellation after the professional starts travelling', async () => {
+      const travelling = createStoredBooking('ON_THE_WAY');
+      primeBookingLookup(travelling);
+
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(409);
+
+      expect(response.body.error.code).toBe('CONFLICT');
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(travelling.status).toBe('ON_THE_WAY');
+    });
+
+    it('does not allow another customer to cancel the booking', async () => {
+      const requested = createStoredBooking('REQUESTED');
+      primeBookingLookup(requested, { onlyFor: OTHER_CUSTOMER_ID });
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/cancel`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(404);
+
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(requested.status).toBe('REQUESTED');
+    });
+  });
+
+  describe('customer booking close', () => {
+    it('closes a paid booking and records the transition', async () => {
+      const paid = createStoredBooking('PAID');
+      primeBookingLookup(paid);
+
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/close`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(201);
+
+      expect(response.body.data.status).toBe('CLOSED');
+      expect(prisma.bookingStatusHistory.create).toHaveBeenCalledWith({
+        data: {
+          bookingId: BOOKING_ID,
+          fromStatus: 'PAID',
+          toStatus: 'CLOSED',
+          actorUserId: CUSTOMER_ID,
+        },
+      });
+      // Closing records an outcome both sides already agreed to, so it
+      // adds no notification of its own.
+      expect(prisma.notification.create).not.toHaveBeenCalled();
+      expect(paid.status).toBe('CLOSED');
+    });
+
+    it('rejects closing a booking whose payment has not settled', async () => {
+      const confirmed = createStoredBooking('CUSTOMER_CONFIRMED');
+      primeBookingLookup(confirmed);
+
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/close`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(409);
+
+      expect(response.body.error.code).toBe('CONFLICT');
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(confirmed.status).toBe('CUSTOMER_CONFIRMED');
+    });
+
+    it('rejects closing a booking that is already closed', async () => {
+      const closed = createStoredBooking('CLOSED');
+      primeBookingLookup(closed);
+
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/close`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(409);
+
+      expect(response.body.error.code).toBe('CONFLICT');
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(closed.status).toBe('CLOSED');
+    });
+
+    it('does not allow another customer to close the booking', async () => {
+      const paid = createStoredBooking('PAID');
+      primeBookingLookup(paid, { onlyFor: OTHER_CUSTOMER_ID });
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/close`)
+        .set('Authorization', `Bearer ${customerToken}`)
+        .expect(404);
+
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(paid.status).toBe('PAID');
+    });
+
+    it('never lets a professional close the booking', async () => {
+      const paid = createStoredBooking('PAID');
+      primeBookingLookup(paid);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/customer/bookings/${BOOKING_ID}/close`)
+        .set('Authorization', `Bearer ${professionalToken}`)
+        .expect(403);
+
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.bookingStatusHistory.create).not.toHaveBeenCalled();
+      expect(paid.status).toBe('PAID');
+    });
+  });
+
   /**
    * Wires the mocked booking row into the lifecycle service's lookups. The
    * detail read and the guarded update both resolve through `findFirst`.
@@ -435,15 +580,15 @@ describe('Customer bookings (e2e)', () => {
         where,
         data,
       }: {
-        where: { id: string; customerId: string; status: string };
-        data: { status: LifecycleStatus };
+        where: { id: string; customerId?: string; status?: string };
+        data: Partial<StoredBooking>;
       }) => {
         const matches =
           booking.id === where.id &&
-          booking.customerId === where.customerId &&
-          booking.status === where.status;
+          (!where.customerId || booking.customerId === where.customerId) &&
+          (!where.status || booking.status === where.status);
         if (!matches) return { count: 0 };
-        booking.status = data.status;
+        Object.assign(booking, data);
         return { count: 1 };
       },
     );
@@ -451,6 +596,21 @@ describe('Customer bookings (e2e)', () => {
 });
 
 function createStoredBooking(status: LifecycleStatus = 'REQUESTED'): StoredBooking {
+  const completedByProfessional =
+    status === 'COMPLETED_BY_PROFESSIONAL' ||
+    status === 'CUSTOMER_CONFIRMED' ||
+    status === 'PAYMENT_PENDING' ||
+    status === 'PAID' ||
+    status === 'CLOSED'
+      ? PROFESSIONAL_USER_ID
+      : null;
+  const completedByCustomer =
+    status === 'CUSTOMER_CONFIRMED' ||
+    status === 'PAYMENT_PENDING' ||
+    status === 'PAID' ||
+    status === 'CLOSED'
+      ? CUSTOMER_ID
+      : null;
   return {
     id: BOOKING_ID,
     customerId: CUSTOMER_ID,
@@ -459,12 +619,16 @@ function createStoredBooking(status: LifecycleStatus = 'REQUESTED'): StoredBooki
     scheduledStart: new Date(Date.now() + 86_400_000),
     createdAt: new Date(),
     customerNote: 'Please call on arrival.',
+    completedByProfessionalId: completedByProfessional,
+    completedByProfessionalAt: completedByProfessional ? new Date() : null,
+    completedByCustomerId: completedByCustomer,
+    completedByCustomerAt: completedByCustomer ? new Date() : null,
     service: { id: SERVICE_ID, title: 'AC servicing' },
     customer: { id: CUSTOMER_ID, fullName: 'Rahul Verma' },
     professional: {
       id: '60000000-0000-4000-8000-000000000001',
       userId: PROFESSIONAL_USER_ID,
-      user: { fullName: 'Meera Iyer' },
+      user: { id: PROFESSIONAL_USER_ID, fullName: 'Meera Iyer' },
       businessName: 'Meera Home Care',
     },
     address: {

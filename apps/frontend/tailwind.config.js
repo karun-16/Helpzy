@@ -75,11 +75,11 @@ module.exports = {
         'danger-soft': 'rgb(var(--hz-danger-soft) / <alpha-value>)',
       },
       borderRadius: {
-        card: '14px',
-        control: '10px',
+        card: '10px',
+        control: '8px',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+        sans: ['Aptos', 'Segoe UI', 'system-ui', 'sans-serif'],
       },
     },
   },

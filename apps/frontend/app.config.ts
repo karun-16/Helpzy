@@ -47,6 +47,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   web: {
     bundler: 'metro',
+    favicon: './assets/helpzy.png',
     // Single page application output. HELPZY is an authenticated, client-side
     // app with no SEO surface, so pre-rendered HTML is not needed and this
     // keeps the web build free of server-side rendering constraints.
@@ -59,5 +60,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     apiBaseUrl: resolveApiBaseUrl(env),
     apiTimeoutMs: resolveApiTimeoutMs(env),
     apiGlobalPrefix: resolveApiGlobalPrefix(env),
+    mediaMaxBytes: Number(env.MEDIA_MAX_BYTES) || 5 * 1024 * 1024,
   },
 });

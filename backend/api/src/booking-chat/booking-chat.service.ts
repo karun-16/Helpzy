@@ -71,8 +71,12 @@ export class BookingChatService {
     const party = await this.assertParticipant(userId, bookingId);
 
     if (TERMINAL_BOOKING_STATUSES.includes(party.status as BookingStatus)) {
-      // A closed or cancelled job is over; keeping the thread writable would let
-      // either party keep notifying the other through a dead booking.
+      // A closed, cancelled or declined job is over; keeping the thread writable
+      // would let either party keep notifying the other through a dead booking.
+      //
+      // A *paid* booking is deliberately not in here. Settled is not finished: the
+      // customer can still close it and either party can still dispute it, so a
+      // paid booking whose customer is unhappy has to be able to say so.
       throw new ForbiddenException({
         code: API_ERROR_CODES.CONFLICT,
         message: 'This booking is closed, so its chat is read-only.',

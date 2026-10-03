@@ -12,12 +12,13 @@ import { useRouter } from 'expo-router';
 import type { CustomerProfessionalProfile } from '@helpzy/types';
 
 import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-header';
+import { PlatformNoticeBanner } from '@/components/platform-notice-banner';
 import { ProfessionalCard } from '@/components/professional-card';
 import { api } from '@/lib/api';
 import { appConfig } from '@/lib/config';
 import { clearAuthSession } from '@/lib/auth-session';
 import { useViewer } from '@/lib/hooks';
-import type { CustomerServiceCategories } from '@helpzy/api-client';
+import type { CustomerServiceCategories, PublicPlatformSettings } from '@helpzy/api-client';
 
 /** First name only, so the greeting stays one line. Falls back to the full name. */
 function firstName(fullName: string): string {
@@ -48,6 +49,16 @@ export function CustomerHomeScreen({ publicMode = false }: { publicMode?: boolea
   } | null>(null);
   const [search, setSearch] = useState('');
   const [reload, setReload] = useState(0);
+  /*
+   * The platform's own announcements and maintenance state.
+   *
+   * Fetched here rather than by the header because this screen is also the public
+   * marketplace, and a visitor who has not signed in is exactly the person who
+   * most needs to be told the platform is closed. A failure leaves it null, and
+   * the banner renders nothing - the server still refuses a blocked action, so the
+   * worst case is a missing notice rather than a broken one.
+   */
+  const [platformSettings, setPlatformSettings] = useState<PublicPlatformSettings | null>(null);
   const categoriesCurrent = categoriesResult?.request === reload;
   const professionalsCurrent = professionalsResult?.request === reload;
   const categoriesLoading = !categoriesCurrent;
@@ -82,6 +93,17 @@ export function CustomerHomeScreen({ publicMode = false }: { publicMode?: boolea
       });
     return () => controller.abort();
   }, [reload]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.customerDiscovery
+      .platformSettings(controller.signal)
+      .then((data) => setPlatformSettings(data.publicView))
+      .catch(() => {
+        /* A banner is best-effort; the server enforces the same rules regardless. */
+      });
+    return () => controller.abort();
+  }, []);
 
   const term = search.trim().toLocaleLowerCase();
   const filteredCategories = !term
@@ -119,6 +141,7 @@ export function CustomerHomeScreen({ publicMode = false }: { publicMode?: boolea
         onLogout={isGuest ? undefined : logout}
         guest={isGuest}
       />
+      <PlatformNoticeBanner settings={platformSettings} />
       <ScrollView
         ref={scrollRef}
         showsVerticalScrollIndicator={false}
@@ -207,14 +230,6 @@ export function CustomerHomeScreen({ publicMode = false }: { publicMode?: boolea
                   >
                     <Text className="text-sm font-bold text-inverse-text">Browse services</Text>
                   </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Go to My Bookings"
-                    onPress={() => router.push('/customer/bookings')}
-                    className="min-h-11 justify-center rounded-lg border border-inverse-border px-4 active:bg-brand-900"
-                  >
-                    <Text className="text-sm font-semibold text-inverse">My Bookings</Text>
-                  </Pressable>
                 </>
               )}
             </View>
@@ -256,24 +271,6 @@ export function CustomerHomeScreen({ publicMode = false }: { publicMode?: boolea
                 </Text>
               </View>
               <View className="flex-row items-center gap-4">
-                {/*
-                  Only refreshing lives here. Notifications, bookings and settings
-                  are reached from the bell and the avatar menu, so the page does
-                  not repeat the account menu as permanent links - and a guest
-                  who cannot use them is not shown them.
-                */}
-                {viewer.isSignedIn ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Go to My Bookings"
-                    onPress={() => router.push('/customer/bookings')}
-                    className="min-h-10 justify-center"
-                  >
-                    <Text className="text-sm font-semibold text-brand-800 dark:text-brand-300">
-                      My Bookings
-                    </Text>
-                  </Pressable>
-                ) : null}
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Refresh the marketplace"

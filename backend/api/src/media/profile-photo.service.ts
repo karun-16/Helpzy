@@ -1,10 +1,27 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { API_ERROR_CODES, type Role } from '@helpzy/types';
+import {
+  HEIC_IMAGE_CONTENT_TYPES,
+  PROFILE_IMAGE_FORMAT_SUMMARY,
+  type ProfileImageContentType,
+} from '@helpzy/validation';
 
 import { PrismaService } from '../database/prisma.service';
 import { MediaStorageService, decodeBase64Payload } from './media-storage.service';
 
-export const ALLOWED_PROFILE_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+/**
+ * The accepted photo types come from the shared list rather than being declared
+ * here, so the picker this screen uses and the server cannot disagree about what
+ * a person is allowed to upload.
+ */
+export const ALLOWED_PROFILE_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/bmp',
+  'image/avif',
+] as const satisfies readonly ProfileImageContentType[];
 export type AllowedProfileImageType = (typeof ALLOWED_PROFILE_IMAGE_TYPES)[number];
 
 export function parseProfilePhotoInput(body: unknown): {
@@ -12,11 +29,24 @@ export function parseProfilePhotoInput(body: unknown): {
   contentType: AllowedProfileImageType;
 } {
   const input = (body ?? {}) as { data?: unknown; contentType?: unknown };
-  const contentType = ALLOWED_PROFILE_IMAGE_TYPES.find((type) => type === input.contentType);
+  const declared = typeof input.contentType === 'string' ? input.contentType : '';
+  /*
+   * Checked before the allow-list so a phone photo is told what to do about
+   * itself. "Unsupported image" reads as a broken app; being told the file is
+   * HEIC and needs exporting reads as an instruction.
+   */
+  if ((HEIC_IMAGE_CONTENT_TYPES as readonly string[]).includes(declared)) {
+    throw new BadRequestException({
+      code: API_ERROR_CODES.VALIDATION_FAILED,
+      message:
+        'HEIC photos cannot be displayed in a browser. Please export the photo as JPEG and upload it again.',
+    });
+  }
+  const contentType = ALLOWED_PROFILE_IMAGE_TYPES.find((type) => type === declared);
   if (typeof input.data !== 'string' || !contentType) {
     throw new BadRequestException({
       code: API_ERROR_CODES.VALIDATION_FAILED,
-      message: 'Provide a base64 image and its content type.',
+      message: `Provide a base64 image and its content type (${PROFILE_IMAGE_FORMAT_SUMMARY}).`,
     });
   }
   return { data: input.data, contentType };
@@ -61,8 +91,8 @@ export class ProfilePhotoService {
       body,
     });
 
-    await this.prisma.$transaction([
-      this.prisma.mediaAsset.upsert({
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.mediaAsset.upsert({
         where: { ownerUserId_kind: { ownerUserId: owner.id, kind: 'AVATAR' } },
         update: {
           provider: stored.provider,
@@ -80,12 +110,18 @@ export class ProfilePhotoService {
           contentType: stored.contentType,
           byteSize: stored.byteSize,
         },
-      }),
-      this.prisma.user.updateMany({
+      });
+      const updated = await transaction.user.updateMany({
         where: { id: owner.id, role },
         data: { avatarUrl: stored.publicUrl },
-      }),
-    ]);
+      });
+      if (updated.count !== 1) {
+        throw new NotFoundException({
+          code: API_ERROR_CODES.NOT_FOUND,
+          message: 'Your account could not be found.',
+        });
+      }
+    });
 
     return {
       kind: 'AVATAR',

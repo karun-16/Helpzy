@@ -21,7 +21,6 @@ export default tseslint.config(
       '**/*.tsbuildinfo',
       'docs/**',
       'pnpm-lock.yaml',
-      'PBL Template.pdf',
     ],
   },
   js.configs.recommended,

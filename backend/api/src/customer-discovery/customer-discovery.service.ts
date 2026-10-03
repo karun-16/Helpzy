@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   API_ERROR_CODES,
   BOOKING_STATUSES,
+  PROFESSIONAL_VERIFICATION_STATUSES,
   ROLES,
   REVIEW_STATUSES,
   type CustomerProfessional,
@@ -11,10 +12,31 @@ import {
 import { professionalMarketplaceProfileSchema, workingHoursSchema } from '@helpzy/validation';
 
 import { PrismaService } from '../database/prisma.service';
+import type { Prisma } from '@prisma/client';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
-const AVAILABLE_PROFESSIONAL_FILTER = {
+/**
+ * Which professionals the marketplace will show.
+ *
+ * A method rather than a constant because one of the conditions is a platform
+ * setting. Every public query composes this, so there is exactly one place that
+ * decides who is discoverable - the alternative is four filters that can drift.
+ *
+ * `requireVerifiedForDiscovery` is off by default, which preserves the
+ * marketplace's original behaviour: an active professional with an eligible
+ * service is listed, and verification is displayed as a badge rather than used as
+ * a gate. An operator can turn it on, at which point pending, unverified and
+ * rejected professionals drop out of *listing* only. It never affects an existing
+ * booking, and it never hides a professional from the admin review queues, which
+ * use their own queries.
+ *
+ * Typed as Prisma's input rather than left to inference: `availableProfessionalFilter`
+ * overrides `professionalProfile` to add the verification condition, and an inferred
+ * literal type would narrow that field to `{ isNot: null }` and reject the extra key.
+ */
+export const AVAILABLE_PROFESSIONAL_FILTER: Prisma.UserWhereInput = {
   role: ROLES.PROFESSIONAL,
-  status: 'ACTIVE' as const,
+  status: 'ACTIVE',
   professionalProfile: { isNot: null },
 };
 
@@ -28,16 +50,44 @@ const AVAILABLE_PROFESSIONAL_FILTER = {
  */
 @Injectable()
 export class CustomerDiscoveryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: PlatformSettingsService,
+  ) {}
+
+  /**
+   * The professional filter for public listing, widened by the verification
+   * setting when an operator has asked for it.
+   *
+   * Read per request rather than cached here: `PlatformSettingsService` already
+   * caches the document for a short window, so this costs no extra query in the
+   * common case and cannot serve a stale "verified only" policy after an admin
+   * turns it off.
+   */
+  private async availableProfessionalFilter(): Promise<Prisma.UserWhereInput> {
+    const { service } = await this.settings.current();
+    if (!service.requireVerifiedForDiscovery) return AVAILABLE_PROFESSIONAL_FILTER;
+    return {
+      role: ROLES.PROFESSIONAL,
+      status: 'ACTIVE',
+      // `is` rather than spreading the base filter: Prisma treats `{ isNot: null }`
+      // and `{ is: { ... } }` as different filter shapes and will not accept a
+      // field condition alongside `isNot`. `is` already implies the profile exists.
+      professionalProfile: {
+        is: { verification: PROFESSIONAL_VERIFICATION_STATUSES.VERIFIED },
+      },
+    };
+  }
 
   async getCategories(): Promise<CustomerServiceCategory[]> {
+    const professional = await this.availableProfessionalFilter();
     const categories = await this.prisma.serviceCategory.findMany({
       where: {
         isActive: true,
         services: {
           some: {
             isActive: true,
-            owner: { is: AVAILABLE_PROFESSIONAL_FILTER },
+            owner: { is: professional },
           },
         },
       },
@@ -51,7 +101,7 @@ export class CustomerDiscoveryService {
         services: {
           where: {
             isActive: true,
-            owner: { is: AVAILABLE_PROFESSIONAL_FILTER },
+            owner: { is: professional },
           },
           orderBy: { title: 'asc' },
           select: { id: true, title: true, summary: true },
@@ -63,12 +113,13 @@ export class CustomerDiscoveryService {
   }
 
   async getProfessionalsForService(serviceId: string) {
+    const professional = await this.availableProfessionalFilter();
     const service = await this.prisma.service.findFirst({
       where: {
         id: serviceId,
         isActive: true,
         category: { isActive: true },
-        owner: { is: AVAILABLE_PROFESSIONAL_FILTER },
+        owner: { is: professional },
       },
       select: {
         id: true,
@@ -102,8 +153,9 @@ export class CustomerDiscoveryService {
   }
 
   async getProfessionalProfile(professionalId: string) {
+    const professional = await this.availableProfessionalFilter();
     const user = await this.prisma.user.findFirst({
-      where: { id: professionalId, ...AVAILABLE_PROFESSIONAL_FILTER },
+      where: { id: professionalId, ...professional },
       select: {
         id: true,
         fullName: true,
@@ -135,9 +187,10 @@ export class CustomerDiscoveryService {
   }
 
   async getAvailableProfessionals(): Promise<CustomerProfessionalProfile[]> {
+    const professional = await this.availableProfessionalFilter();
     const users = await this.prisma.user.findMany({
       where: {
-        ...AVAILABLE_PROFESSIONAL_FILTER,
+        ...professional,
         services: { some: { isActive: true, category: { isActive: true } } },
       },
       orderBy: { fullName: 'asc' },

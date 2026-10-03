@@ -12,7 +12,6 @@ import {
 } from '@/components/marketplace-ui';
 import { api, ApiError } from '@/lib/api';
 import type { BookingMessageDto } from '@helpzy/validation';
-
 /**
  * The booking-scoped conversation.
  *
@@ -159,8 +158,13 @@ export function BookingChatPanel({
  * The customer's payment view for one booking.
  *
  * The amount comes from the agreed service price on the server. The method
- * buttons come from `capabilities`, so an unconfigured gateway is never shown as
- * an option.
+ * buttons come from `capabilities`, so an unconfigured gateway is never shown
+ * as an option.
+ *
+ * A cash payment is settled by agreement, not by a provider: it only becomes
+ * `PAID` once both the customer and the professional have confirmed the
+ * handover, so the panel shows whose confirmation is still owed and offers the
+ * customer their own half.
  */
 export function BookingPaymentPanel({ bookingId }: { bookingId: string }) {
   const [payment, setPayment] = useState<Awaited<
@@ -170,38 +174,63 @@ export function BookingPaymentPanel({ bookingId }: { bookingId: string }) {
     ReturnType<typeof api.payments.capabilities>
   > | null>(null);
   const [failed, setFailed] = useState(false);
-  const [starting, setStarting] = useState<'ONLINE' | 'DIRECT' | null>(null);
+  /**
+   * A booking with no payment record yet is the normal first state, not a
+   * failure: the customer chooses a method below. It is told apart from a real
+   * load error by the 404 the server answers with.
+   */
+  const [notStarted, setNotStarted] = useState(false);
+  const [starting, setStarting] = useState<'ONLINE' | 'DIRECT' | 'CASH' | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
     let active = true;
-    Promise.all([api.payments.getForBooking(bookingId), api.payments.capabilities()])
-      .then(([loaded, caps]) => {
-        if (!active) return;
-        setPayment(loaded);
-        setCapabilities(caps);
-        setFailed(false);
+    // Capabilities never depend on a payment existing, so they are read
+    // separately from the payment itself.
+    api.payments
+      .capabilities()
+      .then((caps) => {
+        if (active) setCapabilities(caps);
       })
       .catch(() => {
-        if (active) setFailed(true);
+        /* The method buttons are hidden rather than guessed at. */
+      });
+    api.payments
+      .getForBooking(bookingId)
+      .then((loaded) => {
+        if (!active) return;
+        setPayment(loaded);
+        setNotStarted(false);
+        setFailed(false);
+      })
+      .catch((requestError) => {
+        if (!active) return;
+        const isNotFound = requestError instanceof ApiError && requestError.status === 404;
+        setPayment(null);
+        setNotStarted(isNotFound);
+        setFailed(!isNotFound);
       });
     return () => {
       active = false;
     };
   }, [bookingId]);
 
-  const start = async (method: 'ONLINE' | 'DIRECT') => {
+  const start = async (method: 'ONLINE' | 'DIRECT' | 'CASH') => {
     setStarting(method);
     setError('');
     setNotice('');
     try {
       const updated = await api.payments.start(bookingId, method);
       setPayment(updated);
+      setNotStarted(false);
       setNotice(
         updated.status === 'PAID'
           ? 'This payment is recorded as paid.'
-          : 'This payment has been started. It is not paid yet.',
+          : method === 'CASH'
+            ? 'Cash payment started. Confirm the handover once the money has changed hands.'
+            : 'This payment has been started. It is not paid yet.',
       );
     } catch (requestError) {
       setError(
@@ -212,9 +241,32 @@ export function BookingPaymentPanel({ bookingId }: { bookingId: string }) {
     }
   };
 
+  const confirmCash = async () => {
+    setConfirming(true);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await api.payments.confirmCashCustomer(bookingId);
+      setPayment(updated);
+      setNotice(
+        updated.cash?.isSettled
+          ? 'Both parties confirmed the cash handover. The booking is paid.'
+          : 'Your cash handover is recorded. The booking is paid once the professional confirms it too.',
+      );
+    } catch (requestError) {
+      setError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'We couldn’t confirm the cash handover.',
+      );
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   if (failed) return <InlineError message="We couldn’t load the payment for this booking." />;
 
-  if (payment === null) {
+  if (payment === null && !notStarted) {
     return (
       <Panel title="Payment">
         <Text className="text-sm text-secondary">Loading payment details...</Text>
@@ -222,50 +274,99 @@ export function BookingPaymentPanel({ bookingId }: { bookingId: string }) {
     );
   }
 
+  const cash = payment?.cash ?? null;
+
   return (
     <Panel
       title="Payment"
       subtitle="Amounts come from the agreed service price. Nothing here can be edited by hand."
     >
-      <View className="gap-1">
-        <DetailRow label="Amount" value={formatMoney(payment.amount, payment.currency)} />
-        <DetailRow label="Status" value={friendlyPaymentStatus(payment.status)} />
-        <DetailRow
-          label="Method"
-          value={payment.method ? friendlyMethod(payment.method) : 'Not chosen yet'}
-        />
-        <DetailRow label="Provider" value={payment.provider ?? 'None'} />
-        {payment.failureReason ? (
-          <DetailRow label="Reported problem" value={payment.failureReason} />
-        ) : null}
-        <DetailRow
-          label="Paid at"
-          value={payment.paidAt ? formatDateTime(payment.paidAt) : 'Not paid'}
-        />
-      </View>
+      {payment ? (
+        <View className="gap-1">
+          <DetailRow label="Amount" value={formatMoney(payment.amount, payment.currency)} />
+          <DetailRow label="Status" value={friendlyPaymentStatus(payment.status)} />
+          <DetailRow
+            label="Method"
+            value={payment.method ? friendlyMethod(payment.method) : 'Not chosen yet'}
+          />
+          <DetailRow label="Provider" value={payment.provider ?? 'None'} />
+          {payment.failureReason ? (
+            <DetailRow label="Reported problem" value={payment.failureReason} />
+          ) : null}
+          <DetailRow
+            label="Paid at"
+            value={payment.paidAt ? formatDateTime(payment.paidAt) : 'Not paid'}
+          />
+        </View>
+      ) : null}
 
-      {payment.status === 'PAID' ? (
+      {payment?.status === 'PAID' ? (
         <InlineSuccess message="This booking has been paid." />
-      ) : capabilities?.onlineAvailable ? (
-        <ActionButton
-          label={`Pay ${formatMoney(payment.amount, payment.currency)} online`}
-          onPress={() => start('ONLINE')}
-          busy={starting !== null}
-        />
-      ) : (
-        <Text className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
-          Online payment is not available in this deployment, so no amount has been charged. You can
-          pay the professional directly instead.
-        </Text>
-      )}
+      ) : cash ? (
+        /*
+         * A cash payment is settled by both parties agreeing the money moved,
+         * so the panel shows each side's confirmation and whose turn it is
+         * rather than a single "pay" button.
+         */
+        <View className="mt-4 gap-2 rounded-lg border border-hairline dark:border-hairline-strong bg-slate-50 p-4 dark:bg-canvas">
+          <Text className="text-sm font-semibold text-primary">Cash handover</Text>
+          <ConfirmationLine
+            label="You confirmed"
+            at={cash.customerConfirmedAt}
+            name={cash.customerConfirmedByName}
+          />
+          <ConfirmationLine
+            label="Professional confirmed"
+            at={cash.professionalConfirmedAt}
+            name={cash.professionalConfirmedByName}
+          />
+          {cash.isSettled ? (
+            <InlineSuccess message="Both parties confirmed the cash handover." />
+          ) : cash.awaitingViewerConfirmation ? (
+            <>
+              <Text className="text-sm text-secondary">
+                Confirm that the cash has changed hands. The booking is paid once the professional
+                confirms it too.
+              </Text>
+              <ActionButton label="Confirm cash handover" onPress={confirmCash} busy={confirming} />
+            </>
+          ) : (
+            <Text className="text-sm text-secondary">
+              Waiting for the professional to confirm the handover.
+            </Text>
+          )}
+        </View>
+      ) : null}
 
-      {payment.status !== 'PAID' && capabilities?.directAvailable ? (
-        <ActionButton
-          label="I will pay the professional directly"
-          tone="subtle"
-          onPress={() => start('DIRECT')}
-          busy={starting !== null}
-        />
+      {payment?.status !== 'PAID' && !cash ? (
+        <View className="mt-4 gap-3">
+          {capabilities?.onlineAvailable ? (
+            <ActionButton
+              label={`Pay ${formatMoney(payment?.amount ?? 0, payment?.currency ?? '')} online`}
+              onPress={() => start('ONLINE')}
+              busy={starting !== null}
+            />
+          ) : (
+            <Text className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+              Online payment is not available in this deployment, so no amount has been charged. You
+              can pay the professional directly or in cash instead.
+            </Text>
+          )}
+          {capabilities?.directAvailable ? (
+            <ActionButton
+              label="I will pay the professional directly"
+              tone="subtle"
+              onPress={() => start('DIRECT')}
+              busy={starting !== null}
+            />
+          ) : null}
+          <ActionButton
+            label="I will pay the professional in cash"
+            tone="subtle"
+            onPress={() => start('CASH')}
+            busy={starting !== null}
+          />
+        </View>
       ) : null}
 
       <InlineError message={error} />
@@ -274,7 +375,14 @@ export function BookingPaymentPanel({ bookingId }: { bookingId: string }) {
   );
 }
 
-/** Read-only professional payment status with confirmation for direct receipt. */
+/**
+ * Read-only professional payment status with confirmation for direct receipt
+ * and for a cash handover.
+ *
+ * The professional cannot start or change a payment. They can only record a
+ * direct receipt, or confirm their half of a cash handover, which settles the
+ * payment once the customer has confirmed theirs too.
+ */
 export function ProfessionalPaymentPanel({ bookingId }: { bookingId: string }) {
   const [payment, setPayment] = useState<Awaited<
     ReturnType<typeof api.payments.getAsProfessional>
@@ -293,8 +401,14 @@ export function ProfessionalPaymentPanel({ bookingId }: { bookingId: string }) {
         setPayment(loaded);
         setFailed(false);
       })
-      .catch(() => {
-        if (active) setFailed(true);
+      .catch((requestError) => {
+        if (!active) return;
+        // No payment has been started for this booking yet.
+        if (requestError instanceof ApiError && requestError.status === 404) {
+          setPayment(null);
+        } else {
+          setFailed(true);
+        }
       });
     return () => {
       active = false;
@@ -320,14 +434,41 @@ export function ProfessionalPaymentPanel({ bookingId }: { bookingId: string }) {
     }
   };
 
+  const confirmCash = async () => {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await api.payments.confirmCashProfessional(bookingId);
+      setPayment(updated);
+      setNotice(
+        updated.cash?.isSettled
+          ? 'Both parties confirmed the cash handover. The booking is paid.'
+          : 'Your cash handover is recorded. The booking is paid once the customer confirms it too.',
+      );
+    } catch (requestError) {
+      setError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'We couldn’t confirm the cash handover.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (failed) return <InlineError message="No payment record is available for this booking." />;
   if (!payment) {
     return (
       <Panel title="Payment">
-        <Text className="text-sm text-secondary">Loading payment details...</Text>
+        <Text className="text-sm text-secondary">
+          The customer has not started payment for this booking yet.
+        </Text>
       </Panel>
     );
   }
+
+  const cash = payment.cash ?? null;
 
   return (
     <Panel title="Payment" subtitle="Payment status is controlled by the server.">
@@ -343,7 +484,41 @@ export function ProfessionalPaymentPanel({ bookingId }: { bookingId: string }) {
           value={payment.paidAt ? formatDateTime(payment.paidAt) : 'Not paid'}
         />
       </View>
-      {payment.method === 'DIRECT' && payment.status !== 'PAID' ? (
+      {cash ? (
+        /*
+         * A cash payment settles only when both parties have confirmed the
+         * handover, so the professional sees the customer's confirmation
+         * alongside their own and confirms their half here.
+         */
+        <View className="mt-4 gap-2 rounded-lg border border-hairline dark:border-hairline-strong bg-slate-50 p-4 dark:bg-canvas">
+          <Text className="text-sm font-semibold text-primary">Cash handover</Text>
+          <ConfirmationLine
+            label="Customer confirmed"
+            at={cash.customerConfirmedAt}
+            name={cash.customerConfirmedByName}
+          />
+          <ConfirmationLine
+            label="You confirmed"
+            at={cash.professionalConfirmedAt}
+            name={cash.professionalConfirmedByName}
+          />
+          {cash.isSettled ? (
+            <InlineSuccess message="Both parties confirmed the cash handover." />
+          ) : cash.awaitingViewerConfirmation ? (
+            <>
+              <Text className="text-sm text-secondary">
+                Confirm that the cash has changed hands. The booking is paid once the customer
+                confirms it too.
+              </Text>
+              <ActionButton label="Confirm cash handover" onPress={confirmCash} busy={busy} />
+            </>
+          ) : (
+            <Text className="text-sm text-secondary">
+              Waiting for the customer to confirm the handover.
+            </Text>
+          )}
+        </View>
+      ) : payment.method === 'DIRECT' && payment.status !== 'PAID' ? (
         <ActionButton label="Confirm direct payment received" onPress={recordReceipt} busy={busy} />
       ) : payment.method === 'ONLINE' && payment.status !== 'PAID' ? (
         <Text className="mt-3 text-sm leading-5 text-secondary">
@@ -457,20 +632,54 @@ export function LeaveReviewPanel({
   canReview: boolean;
   existingReviewId: string | null;
 }) {
+  type CustomerReview = Awaited<ReturnType<typeof api.reviews.listOwn>>[number];
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
+  const [reviewResult, setReviewResult] = useState<{
+    reviewId: string;
+    review: CustomerReview | null;
+  } | null>(null);
+  const savedReview = done
+    ? (reviewResult?.review ?? null)
+    : reviewResult?.reviewId === existingReviewId
+      ? reviewResult.review
+      : null;
+  const loadingReview = Boolean(existingReviewId && reviewResult?.reviewId !== existingReviewId);
+
+  useEffect(() => {
+    if (!existingReviewId) return;
+    let active = true;
+    api.reviews
+      .listOwn()
+      .then((reviews) => {
+        if (active) {
+          setReviewResult({
+            reviewId: existingReviewId,
+            review: reviews.find((review) => review.id === existingReviewId) ?? null,
+          });
+        }
+      })
+      .catch(() => {
+        if (active) setReviewResult({ reviewId: existingReviewId, review: null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [existingReviewId]);
 
   const submit = async () => {
+    if (saving) return;
     setSaving(true);
     setError('');
     try {
-      await api.reviews.create(bookingId, {
+      const review = await api.reviews.create(bookingId, {
         rating,
         comment: comment.trim() === '' ? null : comment.trim(),
       });
+      setReviewResult({ reviewId: review.id, review });
       setDone(true);
     } catch (requestError) {
       setError(
@@ -484,9 +693,32 @@ export function LeaveReviewPanel({
   };
 
   if (existingReviewId || done) {
+    if (!savedReview) {
+      return (
+        <Panel title="Your review">
+          <Text className="text-sm text-secondary">
+            {loadingReview
+              ? 'Loading your submitted review...'
+              : 'Your review is recorded, but its details are currently unavailable.'}
+          </Text>
+        </Panel>
+      );
+    }
     return (
-      <Panel title="Your review" subtitle="Reviews are published against a real completed booking.">
-        <InlineSuccess message="Thank you — your review has been recorded." />
+      <Panel title="Your review" subtitle="Your submitted review for this booking.">
+        <View className="gap-2">
+          <Text className="text-sm font-semibold text-primary">
+            {savedReview.rating} out of 5 · {savedReview.status.toLocaleLowerCase()}
+          </Text>
+          {savedReview.comment ? (
+            <Text className="text-sm leading-5 text-secondary">{savedReview.comment}</Text>
+          ) : (
+            <Text className="text-sm text-secondary">No written comment was included.</Text>
+          )}
+          <Text className="text-xs text-muted">
+            Submitted {formatDateTime(savedReview.createdAt)}
+          </Text>
+        </View>
       </Panel>
     );
   }
@@ -509,6 +741,7 @@ export function LeaveReviewPanel({
                 accessibilityRole="radio"
                 accessibilityLabel={`${value} star${value === 1 ? '' : 's'}`}
                 accessibilityState={{ selected: rating === value }}
+                disabled={saving}
                 onPress={() => setRating(value)}
                 className={`min-h-11 w-11 items-center justify-center rounded-lg border ${
                   rating === value
@@ -528,6 +761,7 @@ export function LeaveReviewPanel({
             onChangeText={setComment}
             placeholder="Tell others about the work (optional)"
             placeholderTextColor="#94a3b8"
+            editable={!saving}
             multiline
             className="mt-4 min-h-24 rounded-lg border border-hairline-strong px-3 py-2 align-top text-base text-primary"
           />
@@ -548,5 +782,35 @@ function friendlyPaymentStatus(status: string) {
 }
 
 function friendlyMethod(method: string) {
-  return method === 'ONLINE' ? 'Paid online' : 'Paid directly to the professional';
+  if (method === 'ONLINE') return 'Paid online';
+  if (method === 'CASH') return 'Paid in cash';
+  return 'Paid directly to the professional';
+}
+
+/**
+ * One party's half of a cash handover: who confirmed and when, or that
+ * they have not confirmed yet.
+ */
+function ConfirmationLine({
+  label,
+  at,
+  name,
+}: {
+  label: string;
+  at: string | null;
+  name: string | null;
+}) {
+  return (
+    <Text className="text-sm text-secondary">
+      {label}:{' '}
+      {at ? (
+        <Text className="font-semibold text-primary">
+          {name ? `${name}, ` : ''}
+          {formatDateTime(at)}
+        </Text>
+      ) : (
+        'Not yet'
+      )}
+    </Text>
+  );
 }

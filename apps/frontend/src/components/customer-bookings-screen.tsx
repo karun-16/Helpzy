@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { TERMINAL_BOOKING_STATUSES } from '@helpzy/types';
 
 import { AuthenticatedRoleScreen } from '@/components/authenticated-role-screen';
@@ -11,13 +11,17 @@ import {
   ProfessionalLocationPanel,
 } from '@/components/booking-panels';
 import { CustomerBookingTimeline } from '@/components/booking-timeline';
+import { DisputePanel } from '@/components/dispute-panel';
 import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-header';
+import { ReschedulePanel } from '@/components/reschedule-panel';
 import { StatusPill } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
 import { clearAuthSession } from '@/lib/auth-session';
 import { useAuthSession } from '@/lib/hooks';
 
 type CustomerBooking = Awaited<ReturnType<typeof api.customerBookings.list>>[number];
+/** Who has confirmed completion, and whether this customer still owes theirs. */
+type CompletionState = Awaited<ReturnType<typeof api.customerBookings.completionState>>;
 
 /**
  * Which statuses unlock each downstream panel, mirroring the server guards.
@@ -33,6 +37,16 @@ const PAYMENT_STATUSES: CustomerBooking['status'][] = [
 const LOCATION_STATUSES: CustomerBooking['status'][] = ['SCHEDULED', 'ON_THE_WAY', 'IN_PROGRESS'];
 const REVIEWABLE_STATUSES: CustomerBooking['status'][] = [
   'COMPLETED_BY_PROFESSIONAL',
+  'CUSTOMER_CONFIRMED',
+  'PAYMENT_PENDING',
+  'PAID',
+  'CLOSED',
+];
+const CANCELLABLE_STATUSES: CustomerBooking['status'][] = ['REQUESTED', 'ACCEPTED', 'SCHEDULED'];
+const CLOSABLE_STATUSES: CustomerBooking['status'][] = ['PAID'];
+const REBOOKABLE_STATUSES: CustomerBooking['status'][] = [
+  'REJECTED',
+  'CANCELLED',
   'CUSTOMER_CONFIRMED',
   'PAYMENT_PENDING',
   'PAID',
@@ -65,9 +79,63 @@ const STATUS_EXPLANATIONS: Partial<Record<CustomerBooking['status'], string>> = 
   IN_PROGRESS: 'The work is underway.',
   COMPLETED_BY_PROFESSIONAL: 'Marked complete. Please confirm to finish this booking.',
   CUSTOMER_CONFIRMED: 'You confirmed this booking is complete.',
+  PAYMENT_PENDING: 'Payment is being set up.',
+  PAID: 'Payment settled. Close the booking once the work is wrapped up.',
+  CLOSED: 'This booking is closed.',
   REJECTED: 'The professional declined this request.',
   CANCELLED: 'This booking was cancelled.',
 };
+
+/**
+ * Both parties' confirmation, read from the server's completion record.
+ *
+ * Deliberately shows the *waiting* state as well as the confirmations: a booking
+ * that is `COMPLETED_BY_PROFESSIONAL` looks identical to one where both sides
+ * agreed until you look at the timestamps, and telling someone a job is complete
+ * when only one side confirmed is exactly the confusion this panel removes.
+ */
+function CompletionLines({
+  state,
+  viewer,
+}: {
+  state: CompletionState;
+  viewer: 'customer' | 'professional';
+}) {
+  const professionalLabel = state.professionalConfirmedByName ?? 'The professional';
+  const customerLabel = state.customerConfirmedByName ?? 'You';
+  const viewerLabel = viewer === 'customer' ? customerLabel : professionalLabel;
+  const otherLabel = viewer === 'customer' ? professionalLabel : customerLabel;
+
+  return (
+    <View className="mt-3 gap-y-2">
+      <Text className="text-sm text-secondary">
+        {viewerLabel}:{' '}
+        {viewer === 'customer'
+          ? state.customerConfirmedAt
+            ? `confirmed on ${formatDate(state.customerConfirmedAt)}`
+            : 'not confirmed yet'
+          : state.professionalConfirmedAt
+            ? `marked complete on ${formatDate(state.professionalConfirmedAt)}`
+            : 'not marked complete yet'}
+      </Text>
+      <Text className="text-sm text-secondary">
+        {otherLabel}:{' '}
+        {viewer === 'customer'
+          ? state.professionalConfirmedAt
+            ? `marked complete on ${formatDate(state.professionalConfirmedAt)}`
+            : 'has not marked it complete yet'
+          : state.customerConfirmedAt
+            ? `confirmed on ${formatDate(state.customerConfirmedAt)}`
+            : 'has not confirmed yet'}
+      </Text>
+      <Text className="text-sm font-semibold text-primary">
+        {state.isComplete
+          ? 'Both parties have confirmed this booking is complete.'
+          : 'This booking is not complete until both parties confirm.'}
+      </Text>
+    </View>
+  );
+}
 
 export function CustomerBookingsScreen() {
   const router = useRouter();
@@ -83,18 +151,20 @@ export function CustomerBookingsScreen() {
   const error = bookingsCurrent && bookingsResult.error;
   const loadedBookings = bookings ?? [];
 
-  useEffect(() => {
-    const controller = new AbortController();
-    api.customerBookings
-      .list(controller.signal)
-      .then((data) => setBookingsResult({ request: reload, data, error: false }))
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setBookingsResult({ request: reload, data: [], error: true });
-        }
-      });
-    return () => controller.abort();
-  }, [reload]);
+  useFocusEffect(
+    useCallback(() => {
+      const controller = new AbortController();
+      api.customerBookings
+        .list(controller.signal)
+        .then((data) => setBookingsResult({ request: reload, data, error: false }))
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setBookingsResult({ request: reload, data: [], error: true });
+          }
+        });
+      return () => controller.abort();
+    }, [reload]),
+  );
 
   const logout = () => {
     clearAuthSession();
@@ -217,8 +287,16 @@ export function CustomerBookingDetailsScreen() {
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState('');
+  const [completion, setCompletion] = useState<CompletionState | null>(null);
+  const [cancelPrompt, setCancelPrompt] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+  const [closePrompt, setClosePrompt] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState('');
   const bookingCurrent = bookingResult?.id === bookingId;
   const booking = bookingCurrent ? bookingResult.data : null;
+  const bookingStatus = booking?.status ?? null;
   const loading = Boolean(bookingId) && !bookingCurrent;
   const error = !bookingId || (bookingCurrent && bookingResult.error);
 
@@ -236,9 +314,43 @@ export function CustomerBookingDetailsScreen() {
     return () => controller.abort();
   }, [bookingId]);
 
+  /**
+   * The completion record is the only thing that says whether *both* parties
+   * agreed. It is read separately from the booking because a booking that reached
+   * `COMPLETED_BY_PROFESSIONAL` still owes the customer their confirmation, and
+   * only the two timestamps distinguish "waiting on the customer" from "waiting
+   * on the professional".
+   */
+  useEffect(() => {
+    if (!bookingId) return;
+    const controller = new AbortController();
+    api.customerBookings
+      .completionState(bookingId, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setCompletion(data);
+      })
+      .catch(() => {
+        // The booking still renders; only the completion panel is unavailable.
+        if (!controller.signal.aborted) setCompletion(null);
+      });
+    return () => controller.abort();
+    // Re-read whenever the booking status moves, so the panel cannot go stale
+    // after one side confirms.
+  }, [bookingId, bookingStatus]);
+
   const logout = () => {
     clearAuthSession();
     router.replace('/');
+  };
+
+  const reloadBooking = async () => {
+    if (!bookingId) return;
+    const [updated, state] = await Promise.all([
+      api.customerBookings.get(bookingId),
+      api.customerBookings.completionState(bookingId).catch(() => null),
+    ]);
+    setBookingResult({ id: bookingId, data: updated, error: false });
+    setCompletion(state);
   };
 
   const confirmCompletion = async () => {
@@ -246,8 +358,10 @@ export function CustomerBookingDetailsScreen() {
     setConfirming(true);
     setConfirmError('');
     try {
-      const updated = await api.customerBookings.confirmCompletion(booking.id);
-      setBookingResult({ id: updated.id, data: updated, error: false });
+      await api.customerBookings.markCompleted(booking.id);
+      // The endpoint answers with the completion state; the booking is re-read so
+      // the status pill and the payment panel reflect the same moment.
+      await reloadBooking();
     } catch (requestError) {
       setConfirmError(
         requestError instanceof ApiError
@@ -256,6 +370,44 @@ export function CustomerBookingDetailsScreen() {
       );
     } finally {
       setConfirming(false);
+    }
+  };
+
+  const cancelBooking = async () => {
+    if (!booking || cancelling) return;
+    setCancelling(true);
+    setCancelError('');
+    try {
+      const updated = await api.customerBookings.cancel(booking.id);
+      setBookingResult({ id: updated.id, data: updated, error: false });
+      setCancelPrompt(false);
+    } catch (requestError) {
+      setCancelError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'We couldn’t cancel this booking. Refresh and try again.',
+      );
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const closeBooking = async () => {
+    if (!booking || closing) return;
+    setClosing(true);
+    setCloseError('');
+    try {
+      const updated = await api.customerBookings.close(booking.id);
+      setBookingResult({ id: updated.id, data: updated, error: false });
+      setClosePrompt(false);
+    } catch (requestError) {
+      setCloseError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'We couldn’t close this booking. Refresh and try again.',
+      );
+    } finally {
+      setClosing(false);
     }
   };
 
@@ -334,7 +486,123 @@ export function CustomerBookingDetailsScreen() {
                   </Text>
                 </View>
 
-                {booking.status === 'COMPLETED_BY_PROFESSIONAL' ? (
+                {CANCELLABLE_STATUSES.includes(booking.status) ? (
+                  <View className="mt-5 border-t border-hairline dark:border-hairline-strong pt-5">
+                    {cancelPrompt ? (
+                      <View className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/40">
+                        <Text className="text-sm font-semibold text-primary">
+                          Cancel this booking?
+                        </Text>
+                        <Text className="mt-1 text-sm text-secondary">
+                          You can cancel until the professional starts travelling. The professional
+                          will be notified.
+                        </Text>
+                        <View className="mt-3 flex-row flex-wrap gap-2">
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: cancelling, busy: cancelling }}
+                            disabled={cancelling}
+                            onPress={() => void cancelBooking()}
+                            className="min-h-11 justify-center rounded-lg bg-rose-700 px-4"
+                          >
+                            {cancelling ? (
+                              <ActivityIndicator color="#ffffff" />
+                            ) : (
+                              <Text className="font-semibold text-white">Confirm cancellation</Text>
+                            )}
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={cancelling}
+                            onPress={() => setCancelPrompt(false)}
+                            className="min-h-11 justify-center rounded-lg border border-hairline-strong px-4"
+                          >
+                            <Text className="font-semibold text-secondary dark:text-primary">
+                              Keep booking
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => setCancelPrompt(true)}
+                        className="min-h-11 self-start justify-center rounded-lg border border-rose-300 px-4 dark:border-rose-800"
+                      >
+                        <Text className="font-semibold text-rose-800 dark:text-rose-300">
+                          Cancel booking
+                        </Text>
+                      </Pressable>
+                    )}
+                    {cancelError ? (
+                      <Text
+                        accessibilityRole="alert"
+                        className="mt-3 text-sm text-rose-800 dark:text-rose-300"
+                      >
+                        {cancelError}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                {REBOOKABLE_STATUSES.includes(booking.status) ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() =>
+                      router.push(
+                        `/customer/bookings/new?professionalId=${encodeURIComponent(booking.professional.id)}&serviceId=${encodeURIComponent(booking.service.id)}`,
+                      )
+                    }
+                    className="mt-5 min-h-11 self-start justify-center rounded-lg bg-brand-800 px-4"
+                  >
+                    <Text className="font-semibold text-white">Book this service again</Text>
+                  </Pressable>
+                ) : null}
+
+                {completion ? (
+                  <View className="mt-5 border-t border-hairline dark:border-hairline-strong pt-5">
+                    <Text className="text-sm font-semibold text-primary">Completion</Text>
+                    <CompletionLines state={completion} viewer="customer" />
+                    {completion.awaitingViewerConfirmation &&
+                    booking.status === 'COMPLETED_BY_PROFESSIONAL' ? (
+                      <>
+                        <Text className="mt-3 text-sm text-secondary">
+                          Confirm that the work is finished to complete this booking.
+                        </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: confirming, busy: confirming }}
+                          disabled={confirming}
+                          onPress={confirmCompletion}
+                          className="mt-4 min-h-12 items-center justify-center rounded-lg bg-brand-800 px-5"
+                        >
+                          {confirming ? (
+                            <ActivityIndicator color="#ffffff" />
+                          ) : (
+                            <Text className="font-semibold text-white">Confirm completion</Text>
+                          )}
+                        </Pressable>
+                      </>
+                    ) : null}
+                    {completion.awaitingViewerConfirmation &&
+                    booking.status !== 'COMPLETED_BY_PROFESSIONAL' ? (
+                      <Text className="mt-3 text-sm text-secondary">
+                        The professional has not marked this job complete yet.
+                      </Text>
+                    ) : null}
+                    {confirmError ? (
+                      <Text
+                        accessibilityRole="alert"
+                        className="mt-3 text-sm text-rose-800 dark:text-rose-300"
+                      >
+                        {confirmError}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : booking.status === 'COMPLETED_BY_PROFESSIONAL' ? (
+                  // The booking reached the completed state but the completion
+                  // record could not be read. Offer the action rather than hiding
+                  // it; the server remains the authority on whether it is allowed.
                   <View className="mt-5 border-t border-hairline dark:border-hairline-strong pt-5">
                     <Text className="text-sm text-secondary">
                       Confirm that the work is finished to complete this booking.
@@ -363,7 +631,69 @@ export function CustomerBookingDetailsScreen() {
                   </View>
                 ) : null}
 
-                <CustomerBookingTimeline bookingId={booking.id} />
+                {CLOSABLE_STATUSES.includes(booking.status) ? (
+                  <View className="mt-5 border-t border-hairline dark:border-hairline-strong pt-5">
+                    {closePrompt ? (
+                      <View className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/40">
+                        <Text className="text-sm font-semibold text-primary">
+                          Close this booking?
+                        </Text>
+                        <Text className="mt-1 text-sm text-secondary">
+                          Payment has settled and the work is done. Closing is final and moves this
+                          booking to closed.
+                        </Text>
+                        <View className="mt-3 flex-row flex-wrap gap-2">
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ disabled: closing, busy: closing }}
+                            disabled={closing}
+                            onPress={() => void closeBooking()}
+                            className="min-h-11 justify-center rounded-lg bg-brand-800 px-4"
+                          >
+                            {closing ? (
+                              <ActivityIndicator color="#ffffff" />
+                            ) : (
+                              <Text className="font-semibold text-white">Confirm close</Text>
+                            )}
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={closing}
+                            onPress={() => setClosePrompt(false)}
+                            className="min-h-11 justify-center rounded-lg border border-hairline-strong px-4"
+                          >
+                            <Text className="font-semibold text-secondary dark:text-primary">
+                              Keep open
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : (
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => setClosePrompt(true)}
+                        className="min-h-11 self-start justify-center rounded-lg bg-brand-800 px-4"
+                      >
+                        <Text className="font-semibold text-white">Close booking</Text>
+                      </Pressable>
+                    )}
+                    {closeError ? (
+                      <Text
+                        accessibilityRole="alert"
+                        className="mt-3 text-sm text-rose-800 dark:text-rose-300"
+                      >
+                        {closeError}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                <ReschedulePanel bookingId={booking.id} />
+
+                <CustomerBookingTimeline
+                  key={`${booking.id}:${booking.status}`}
+                  bookingId={booking.id}
+                />
 
                 <BookingChatPanel
                   bookingId={booking.id}
@@ -386,6 +716,8 @@ export function CustomerBookingDetailsScreen() {
                     existingReviewId={booking.reviewId ?? null}
                   />
                 ) : null}
+
+                <DisputePanel bookingId={booking.id} />
               </View>
             )}
           </View>

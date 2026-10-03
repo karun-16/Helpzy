@@ -1,6 +1,8 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
@@ -19,9 +21,31 @@ const SECOND_BOOKING_ID = 'a5000000-0000-4000-8000-000000000002';
 const SERVICE_ID = 'a6000000-0000-4000-8000-000000000001';
 const CATEGORY_ID = 'a7000000-0000-4000-8000-000000000001';
 const OTHER_SERVICE_ID = 'a6000000-0000-4000-8000-000000000002';
+const OTHER_CATEGORY_ID = 'a7000000-0000-4000-8000-000000000002';
 const MESSAGE_ID = 'a8000000-0000-4000-8000-000000000001';
 
 type Role = 'CUSTOMER' | 'PROFESSIONAL' | 'ADMIN';
+
+/** A valid 1x1 GIF87a, used to prove the format is genuinely accepted. */
+const GIF_SAMPLE = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+/** A valid 1x1 24-bit bitmap: 54-byte file header plus one padded pixel. */
+function bmpSample(): Buffer {
+  const buffer = Buffer.alloc(58);
+  buffer.write('BM', 0, 'ascii');
+  buffer.writeUInt32LE(58, 2);
+  buffer.writeUInt32LE(54, 10);
+  buffer.writeUInt32LE(40, 14);
+  buffer.writeInt32LE(1, 18);
+  buffer.writeInt32LE(1, 22);
+  buffer.writeUInt16LE(1, 26);
+  buffer.writeUInt16LE(24, 28);
+  buffer.writeUInt32LE(4, 34);
+  buffer.writeUInt32LE(2835, 38);
+  buffer.writeUInt32LE(2835, 42);
+  buffer[56] = 0xff;
+  return buffer;
+}
 
 /**
  * Covers the marketplace surfaces added after the booking lifecycle: the
@@ -35,6 +59,7 @@ type Role = 'CUSTOMER' | 'PROFESSIONAL' | 'ADMIN';
  */
 describe('Marketplace (e2e)', () => {
   let app: INestApplication;
+  let config: AppConfigRef;
   const tokens = new Map<string, string>();
 
   const bookings = new Map<string, Record<string, unknown>>();
@@ -131,7 +156,8 @@ describe('Marketplace (e2e)', () => {
       .compile();
 
     app = moduleRef.createNestApplication();
-    configureApp(app, moduleRef.get<AppConfigRef>(APP_CONFIG));
+    config = moduleRef.get<AppConfigRef>(APP_CONFIG);
+    configureApp(app, config);
     await app.init();
   }, 30_000);
 
@@ -320,6 +346,48 @@ describe('Marketplace (e2e)', () => {
       expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
+    it('accepts a GIF or BMP profile photo and refuses bytes that only claim to be one', async () => {
+      /*
+       * GIF and BMP are the reported refusals. Browsers render both and the local
+       * store serves both correctly, so the only thing that ever blocked them was
+       * a whitelist of three formats - and a person who picked one was told to use
+       * a different photo. Exercised through the route rather than the helper so
+       * the response shape the app parses is covered too.
+       */
+      prisma.user.findFirst.mockResolvedValue({ id: CUSTOMER_ID, role: 'CUSTOMER' });
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+      const written: string[] = [];
+      const upload = (contentType: string, data: string) =>
+        request(app.getHttpServer())
+          .post('/api/v1/customer/account/profile/photo')
+          .set('Authorization', `Bearer ${customerToken()}`)
+          .send({ data, contentType });
+
+      try {
+        for (const [contentType, bytes] of [
+          ['image/gif', Buffer.from(GIF_SAMPLE, 'base64')],
+          ['image/bmp', bmpSample()],
+        ] as const) {
+          const response = await upload(contentType, bytes.toString('base64')).expect(201);
+          expect(response.body.data).toEqual(
+            expect.objectContaining({ contentType, kind: 'AVATAR' }),
+          );
+          // Recorded so the file this test wrote is removed again below.
+          written.push(new URL(response.body.data.publicUrl).pathname);
+        }
+
+        // A JPEG whose bytes are a GIF: the filename is not the evidence.
+        await upload('image/jpeg', Buffer.from(GIF_SAMPLE, 'base64').toString('base64')).expect(
+          400,
+        );
+      } finally {
+        // The route writes through the real local provider, so leave nothing behind.
+        for (const pathname of written) {
+          rmSync(join(config.mediaUploadDir, pathname.replace(/^\/media\//, '')), { force: true });
+        }
+      }
+    });
+
     it('updates only the session user and never their phone', async () => {
       prisma.user.updateMany.mockResolvedValue({ count: 1 });
 
@@ -506,10 +574,13 @@ describe('Marketplace (e2e)', () => {
         .set('Authorization', `Bearer ${customerToken()}`)
         .expect(200);
 
-      // The API does not pretend a gateway exists.
+      // The API does not pretend a gateway exists. Cash is always available
+      // because it needs no provider, and is reported separately from DIRECT
+      // because it needs confirmation from both parties.
       expect(response.body.data).toEqual({
         onlineAvailable: false,
         directAvailable: true,
+        cashAvailable: true,
         providerName: null,
       });
     });
@@ -535,11 +606,17 @@ describe('Marketplace (e2e)', () => {
       expect(prisma.payment.upsert).not.toHaveBeenCalled();
     });
 
-    it('takes the amount from the agreed service price', async () => {
+    it('takes the amount the booking agreed, not the listing price today', async () => {
       const agreedBooking = {
         id: BOOKING_ID,
         reference: 'HZ-ABC123',
         status: 'CUSTOMER_CONFIRMED',
+        // The price snapshotted on the booking when it was made. It differs from the
+        // listing's current price below, and that difference is the point: a
+        // professional can raise a listing's price at any time, and reading the live
+        // price would quietly change what a customer agreed to pay.
+        priceAmount: { toNumber: () => 1250 },
+        currency: 'INR',
         service: { basePrice: { toNumber: () => 1499 }, currency: 'INR' },
         payment: null,
         // The lifecycle re-reads the booking to address its notification.
@@ -571,9 +648,10 @@ describe('Marketplace (e2e)', () => {
         .send({ method: 'DIRECT' })
         .expect(201);
 
-      // The stored amount is the service price, not anything the client sent.
+      // The stored amount is what the customer agreed to, not anything the client
+      // sent and not today's listing price.
       const created = prisma.payment.upsert.mock.calls[0][0].create;
-      expect(created.amount.toNumber()).toBe(1499);
+      expect(created.amount.toNumber()).toBe(1250);
       expect(created.currency).toBe('INR');
     });
 
@@ -1268,7 +1346,7 @@ describe('Marketplace (e2e)', () => {
         isActive: true,
       });
       prisma.service.findUnique.mockResolvedValue(null);
-      prisma.service.create.mockResolvedValue({
+      const createdService = {
         id: SERVICE_ID,
         title: 'Deep AC Service',
         slug: 'deep-ac-service',
@@ -1280,7 +1358,8 @@ describe('Marketplace (e2e)', () => {
         isActive: true,
         category: { id: CATEGORY_ID, slug: 'home-services', name: 'Home Services' },
         _count: { bookings: 0 },
-      });
+      };
+      prisma.service.create.mockResolvedValue(createdService);
 
       const response = await request(app.getHttpServer())
         .post('/api/v1/professional/services')
@@ -1300,6 +1379,52 @@ describe('Marketplace (e2e)', () => {
       expect(response.body.data.bookingCount).toBe(0);
       expect(prisma.service.create).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ slug: 'deep-ac-service' }) }),
+      );
+
+      prisma.service.findMany.mockResolvedValue([createdService]);
+      const ownServices = await request(app.getHttpServer())
+        .get('/api/v1/professional/services')
+        .set('Authorization', `Bearer ${professionalToken()}`)
+        .expect(200);
+      expect(ownServices.body.data).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: SERVICE_ID, isActive: true })]),
+      );
+
+      prisma.serviceCategory.findMany.mockResolvedValue([
+        {
+          id: CATEGORY_ID,
+          slug: 'home-services',
+          name: 'Home Services',
+          description: null,
+          iconUrl: null,
+          services: [{ id: SERVICE_ID, title: 'Deep AC Service', summary: null }],
+        },
+      ]);
+      const marketplace = await request(app.getHttpServer())
+        .get('/api/v1/customer/services')
+        .set('Authorization', `Bearer ${customerToken()}`)
+        .expect(200);
+      expect(marketplace.body.data[0].services).toEqual([
+        { id: SERVICE_ID, title: 'Deep AC Service', summary: null },
+      ]);
+      expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            isActive: true,
+            services: expect.objectContaining({
+              some: expect.objectContaining({
+                isActive: true,
+                owner: {
+                  is: {
+                    role: 'PROFESSIONAL',
+                    status: 'ACTIVE',
+                    professionalProfile: { isNot: null },
+                  },
+                },
+              }),
+            }),
+          }),
+        }),
       );
     });
 
@@ -1337,6 +1462,30 @@ describe('Marketplace (e2e)', () => {
           durationMinutes: 60,
         })
         .expect(400);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/professional/services')
+        .set('Authorization', `Bearer ${professionalToken()}`)
+        .send({
+          categoryId: CATEGORY_ID,
+          title: 'Zero price service',
+          description: 'A description long enough to pass validation.',
+          priceAmount: 0,
+          durationMinutes: 60,
+        })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/professional/services')
+        .set('Authorization', `Bearer ${professionalToken()}`)
+        .send({
+          categoryId: CATEGORY_ID,
+          title: 'Too long a service',
+          description: 'A description long enough to pass validation.',
+          priceAmount: 500,
+          durationMinutes: 1441,
+        })
+        .expect(400);
     });
 
     it('offers only active categories when filing a service', async () => {
@@ -1364,6 +1513,253 @@ describe('Marketplace (e2e)', () => {
         .set('Authorization', `Bearer ${customerToken()}`)
         .expect(403);
     });
+
+    describe('publishing a service', () => {
+      const validBody = {
+        categoryId: CATEGORY_ID,
+        title: 'Deep AC Service',
+        summary: 'Split and window AC service.',
+        description: 'A thorough air conditioner service with a gas check.',
+        priceAmount: 1499,
+        durationMinutes: 90,
+      };
+
+      beforeEach(() => {
+        prisma.professionalProfile.findUnique.mockResolvedValue({ id: PROFESSIONAL_PROFILE_ID });
+        prisma.serviceCategory.findUnique.mockResolvedValue({
+          id: CATEGORY_ID,
+          name: 'Home Services',
+          isActive: true,
+        });
+        prisma.service.findUnique.mockResolvedValue(null);
+        prisma.service.create.mockResolvedValue({
+          id: SERVICE_ID,
+          title: validBody.title,
+          slug: 'deep-ac-service',
+          summary: validBody.summary,
+          description: validBody.description,
+          basePrice: { toNumber: () => validBody.priceAmount },
+          currency: 'INR',
+          durationMinutes: validBody.durationMinutes,
+          isActive: true,
+          category: { id: CATEGORY_ID, slug: 'home-services', name: 'Home Services' },
+          _count: { bookings: 0 },
+        });
+      });
+
+      it('publishes the service as active and owned by the signed-in professional', async () => {
+        const response = await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send(validBody)
+          .expect(201);
+
+        // The row is written live, which is what "published" has to mean for a
+        // customer to be able to find it at all.
+        expect(response.body.data.isActive).toBe(true);
+        expect(response.body.data.bookingCount).toBe(0);
+        expect(prisma.service.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              ownerId: PROFESSIONAL_USER_ID,
+              categoryId: CATEGORY_ID,
+              basePrice: validBody.priceAmount,
+              durationMinutes: validBody.durationMinutes,
+            }),
+          }),
+        );
+      });
+
+      it('never lets the request name a different owner', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ ...validBody, ownerId: OTHER_PROFESSIONAL_USER_ID, isActive: false })
+          .expect(400);
+
+        expect(prisma.service.create).not.toHaveBeenCalled();
+      });
+
+      it('defaults the currency to INR when the professional omits it', async () => {
+        const withoutCurrency: Record<string, unknown> = { ...validBody };
+        delete withoutCurrency.currency;
+
+        await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send(withoutCurrency)
+          .expect(201);
+
+        expect(prisma.service.create).toHaveBeenCalledWith(
+          expect.objectContaining({ data: expect.objectContaining({ currency: 'INR' }) }),
+        );
+      });
+
+      it('requires authentication and the professional role', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .send(validBody)
+          .expect(401);
+
+        await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${customerToken()}`)
+          .send(validBody)
+          .expect(403);
+
+        expect(prisma.service.create).not.toHaveBeenCalled();
+      });
+
+      it('refuses to publish without a professional profile', async () => {
+        prisma.professionalProfile.findUnique.mockResolvedValue(null);
+
+        await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send(validBody)
+          .expect(404);
+
+        expect(prisma.service.create).not.toHaveBeenCalled();
+      });
+
+      it('reports which field was wrong instead of a bare failure', async () => {
+        const response = await request(app.getHttpServer())
+          .post('/api/v1/professional/services')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ ...validBody, durationMinutes: 5 })
+          .expect(400);
+
+        // The UI shows these, so a professional can tell what to correct.
+        expect(response.body.error.details).toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: 'durationMinutes' })]),
+        );
+      });
+
+      it('rejects an update that tries to move a service to another category', async () => {
+        /*
+         * A service's category is fixed at creation. The update schema is strict,
+         * so sending `categoryId` fails outright - which is exactly what the
+         * professional form used to do on every edit.
+         */
+        await request(app.getHttpServer())
+          .patch(`/api/v1/professional/services/${SERVICE_ID}`)
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ title: 'Renamed Service', categoryId: OTHER_CATEGORY_ID })
+          .expect(400);
+
+        expect(prisma.service.update).not.toHaveBeenCalled();
+      });
+
+      it('updates the editable fields of an owned service', async () => {
+        prisma.service.findFirst.mockResolvedValue({
+          id: SERVICE_ID,
+          moderationStatus: 'APPROVED',
+          _count: { bookings: 0 },
+        });
+        prisma.service.update.mockResolvedValue({
+          id: SERVICE_ID,
+          title: 'Renamed Service',
+          slug: 'deep-ac-service',
+          summary: null,
+          description: 'A thorough air conditioner service with a gas check.',
+          basePrice: { toNumber: () => 1499 },
+          currency: 'INR',
+          durationMinutes: 90,
+          isActive: true,
+          moderationStatus: 'APPROVED',
+          moderationNote: null,
+          category: { id: CATEGORY_ID, slug: 'home-services', name: 'Home Services' },
+          _count: { bookings: 0 },
+        });
+
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/professional/services/${SERVICE_ID}`)
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ title: 'Renamed Service' })
+          .expect(200);
+
+        expect(response.body.data.title).toBe('Renamed Service');
+        // Ownership is proven by the lookup, so the update itself only carries
+        // the fields that actually changed.
+        expect(prisma.service.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: SERVICE_ID, ownerId: PROFESSIONAL_USER_ID },
+          }),
+        );
+      });
+
+      it('refuses to activate a listing that is still awaiting review', async () => {
+        prisma.service.findFirst.mockResolvedValue({
+          id: SERVICE_ID,
+          moderationStatus: 'PENDING',
+          _count: { bookings: 0 },
+        });
+
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/professional/services/${SERVICE_ID}`)
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ isActive: true })
+          .expect(409);
+
+        // Activation is the moderator's decision, so a listing
+        // waiting for review cannot be switched live by the
+        // professional who submitted it.
+        expect(response.body.error.message).toContain('waiting for review');
+        expect(prisma.service.update).not.toHaveBeenCalled();
+      });
+
+      it('refuses to activate a listing an admin withdrew', async () => {
+        prisma.service.findFirst.mockResolvedValue({
+          id: SERVICE_ID,
+          moderationStatus: 'REJECTED',
+          _count: { bookings: 0 },
+        });
+
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/professional/services/${SERVICE_ID}`)
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ isActive: true })
+          .expect(409);
+
+        expect(response.body.error.message).toContain('cannot be activated again');
+        expect(prisma.service.update).not.toHaveBeenCalled();
+      });
+
+      it('lets the professional hide and re-show an approved listing', async () => {
+        prisma.service.findFirst.mockResolvedValue({
+          id: SERVICE_ID,
+          moderationStatus: 'APPROVED',
+          _count: { bookings: 0 },
+        });
+        prisma.service.update.mockResolvedValue({
+          id: SERVICE_ID,
+          title: 'Deep AC Service',
+          slug: 'deep-ac-service',
+          summary: null,
+          description: 'A thorough air conditioner service.',
+          basePrice: { toNumber: () => 1499 },
+          currency: 'INR',
+          durationMinutes: 90,
+          isActive: false,
+          moderationStatus: 'APPROVED',
+          moderationNote: null,
+          category: { id: CATEGORY_ID, slug: 'home-services', name: 'Home Services' },
+          _count: { bookings: 0 },
+        });
+
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/professional/services/${SERVICE_ID}`)
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ isActive: false })
+          .expect(200);
+
+        // Hiding is the professional's own control once a
+        // moderator has approved the listing, and it does not
+        // change the moderation decision.
+        expect(response.body.data.isActive).toBe(false);
+        expect(response.body.data.moderationStatus).toBe('APPROVED');
+      });
+    });
   });
 
   describe('admin console', () => {
@@ -1375,6 +1771,166 @@ describe('Marketplace (e2e)', () => {
       await request(app.getHttpServer())
         .get('/api/v1/admin/summary')
         .set('Authorization', `Bearer ${professionalToken()}`)
+        .expect(403);
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/bookings')
+        .set('Authorization', `Bearer ${customerToken()}`)
+        .expect(403);
+    });
+
+    it('lists real booking oversight data with validated filters for admins only', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        {
+          id: BOOKING_ID,
+          reference: 'HZ-ABC123',
+          status: 'REQUESTED',
+          scheduledStart: new Date('2026-10-05T09:30:00.000Z'),
+          createdAt: new Date('2026-10-01T09:30:00.000Z'),
+          priceAmount: '899.00',
+          currency: 'INR',
+          service: { title: 'AC servicing' },
+          customer: { fullName: 'Rahul Verma' },
+          professional: {
+            businessName: 'Meera Home Care',
+            user: { fullName: 'Meera Iyer' },
+          },
+          payment: { status: 'PENDING' },
+          review: null,
+        },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/admin/bookings?search=Rahul&status=REQUESTED&from=2026-10-01&to=2026-10-31')
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .expect(200);
+
+      expect(response.body.data[0]).toMatchObject({
+        id: BOOKING_ID,
+        status: 'REQUESTED',
+        amount: 899,
+        paymentStatus: 'PENDING',
+        reviewStatus: null,
+        customerName: 'Rahul Verma',
+      });
+      expect(prisma.booking.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'REQUESTED',
+            scheduledStart: { gte: new Date('2026-10-01'), lte: new Date('2026-10-31') },
+          }),
+          take: 100,
+        }),
+      );
+
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/bookings?status=NOT_A_STATUS')
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .expect(400);
+    });
+
+    it('combines admin user search, role, status, and category filters server-side', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        {
+          id: PROFESSIONAL_USER_ID,
+          fullName: 'Meera Iyer',
+          phone: '+919800000003',
+          email: 'meera@helpzy.test',
+          role: 'PROFESSIONAL',
+          status: 'ACTIVE',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .get(
+          `/api/v1/admin/users?search=meera&role=PROFESSIONAL&status=ACTIVE&categoryId=${CATEGORY_ID}`,
+        )
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .expect(200);
+
+      expect(response.body.data).toHaveLength(1);
+      expect(prisma.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            role: 'PROFESSIONAL',
+            status: 'ACTIVE',
+            OR: expect.arrayContaining([
+              { fullName: { contains: 'meera', mode: 'insensitive' } },
+              { phone: { contains: 'meera', mode: 'insensitive' } },
+              { email: { contains: 'meera', mode: 'insensitive' } },
+            ]),
+            services: { some: { categoryId: CATEGORY_ID, isActive: true } },
+          }),
+          take: 200,
+        }),
+      );
+
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/users?role=NOT_A_ROLE')
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .expect(400);
+    });
+
+    it('returns real professional profile, service, booking, and review detail only to admins', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        id: PROFESSIONAL_USER_ID,
+        fullName: 'Meera Iyer',
+        phone: '+919800000003',
+        email: 'meera@helpzy.test',
+        avatarUrl: null,
+        status: 'ACTIVE',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        professionalProfile: {
+          id: PROFESSIONAL_PROFILE_ID,
+          businessName: 'Meera Home Care',
+          bio: 'Appliance servicing.',
+          serviceArea: 'Bengaluru',
+          contactEmail: 'meera@helpzy.test',
+          isPhoneVisible: false,
+          yearsOfExperience: 6,
+          verification: 'VERIFIED',
+          verifiedAt: new Date('2026-02-01T00:00:00.000Z'),
+          rejectionNote: null,
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          completedCount: 4,
+          averageRating: '4.50',
+          ratingCount: 2,
+        },
+        services: [
+          {
+            id: SERVICE_ID,
+            title: 'AC servicing',
+            description: 'Maintenance and repair.',
+            summary: 'Home AC service',
+            basePrice: '899.00',
+            currency: 'INR',
+            isActive: true,
+            category: { id: CATEGORY_ID, name: 'Home Services', slug: 'home-services' },
+          },
+        ],
+      });
+      prisma.booking.findMany.mockResolvedValue([]);
+      prisma.review.findMany.mockResolvedValue([]);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/admin/professionals/${PROFESSIONAL_USER_ID}`)
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .expect(200);
+
+      expect(response.body.data).toMatchObject({
+        id: PROFESSIONAL_USER_ID,
+        profileId: PROFESSIONAL_PROFILE_ID,
+        businessName: 'Meera Home Care',
+        verification: 'VERIFIED',
+        averageRating: 4.5,
+        services: [{ id: SERVICE_ID, category: { id: CATEGORY_ID, name: 'Home Services' } }],
+        bookings: [],
+        reviews: [],
+      });
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/admin/professionals/${PROFESSIONAL_USER_ID}`)
+        .set('Authorization', `Bearer ${customerToken()}`)
         .expect(403);
     });
 

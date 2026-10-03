@@ -3,6 +3,7 @@ import { NOTIFICATION_TYPES, type NotificationType } from '@helpzy/types';
 import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 export interface NotificationEvent {
   type: NotificationType;
@@ -28,17 +29,73 @@ export interface NotificationEvent {
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // From the global settings module, so notifications can be switched off
+    // without this module depending on it in its own import list.
+    private readonly platformSettings: PlatformSettingsService,
+  ) {}
+
+  /**
+   * Whether notifications are currently switched on.
+   *
+   * Defaults to `true` if the setting cannot be read. See `emit` for why failing
+   * open is the right direction here.
+   */
+  private async notificationsEnabled(): Promise<boolean> {
+    try {
+      const settings = await this.platformSettings.current();
+      return settings.platform.notificationsEnabled;
+    } catch (error) {
+      this.logger.error(
+        `Could not read the notifications setting; delivering anyway: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return true;
+    }
+  }
 
   /**
    * Accepts an optional transaction so a notification is committed atomically
    * with the change that caused it. Never throws: a failed notification must not
    * roll back a customer's booking.
+   *
+   * `enabled` lets a caller that has already resolved the platform setting pass it
+   * in, which keeps the read out of an open transaction. Omitted, it is resolved
+   * here - correct either way, just one connection cheaper when supplied.
    */
   async emit(
     events: NotificationEvent[],
     client: Prisma.TransactionClient | PrismaService = this.prisma,
+    resolved?: boolean,
   ): Promise<void> {
+    /*
+     * An admin can switch notifications off platform-wide, which is the escape
+     * hatch for a notification outage. It suppresses only the *notice*; the booking
+     * and payment writes that triggered it have already happened or are about to,
+     * and turning notifications off must never change business data. The check is
+     * outside the loop: the setting is cached, so this is one read per call rather
+     * than one per event.
+     *
+     * "Outside the loop" is the whole guarantee, not "outside the transaction". When
+     * a caller passes a transaction client - a booking flow emitting from inside
+     * its own `$transaction` - the settings read still runs on the main client, so
+     * on a cache miss it holds a second connection open while the caller's
+     * transaction holds its first. That turns a 15-second cache miss into
+     * contention on every booking write, which is the opposite of what a cheap
+     * safety check should cost. Callers that can read the flag before opening
+     * their transaction pass `enabled` explicitly; when they cannot, the read
+     * still happens outside the loop, just not outside the transaction.
+     *
+     * A failure to read the setting is not treated as "off". Losing a notice is
+     * recoverable; silently dropping every notification because the settings table
+     * was briefly unreachable is not.
+     */
+    const enabled = resolved ?? (await this.notificationsEnabled());
+    if (!enabled) {
+      this.logger.warn('Platform notifications are switched off; events were not delivered.');
+      return;
+    }
+
     for (const event of events) {
       try {
         await client.notification.create({
@@ -213,6 +270,27 @@ const CUSTOMER_EVENT_COPY = {
   REVIEW_RECEIVED: {
     title: 'Review submitted',
     body: (i) => `You reviewed ${i.bookingReference}. Thank you.`,
+  },
+  COMPLETION_AWAITING_CUSTOMER: {
+    title: 'Confirm the service is complete',
+    body: (i) => `${i.actorName} marked ${i.bookingReference} complete. Please confirm.`,
+  },
+  BOOKING_RESCHEDULE_REQUESTED: {
+    title: 'Reschedule requested',
+    body: (i) => `${i.actorName} asked to move ${i.bookingReference} to a new time.`,
+  },
+  BOOKING_RESCHEDULE_ACCEPTED: {
+    title: 'New time agreed',
+    body: (i) => `${i.bookingReference} was moved to the new time.`,
+  },
+  BOOKING_RESCHEDULE_REJECTED: {
+    title: 'Reschedule declined',
+    body: (i) => `The new time for ${i.bookingReference} was declined.`,
+  },
+  BOOKING_RESCHEDULE_WITHDRAWN: {
+    title: 'Reschedule withdrawn',
+    body: (i) =>
+      `${i.actorName} withdrew the new time they proposed for ${i.bookingReference}. It is back to the original booking.`,
   },
 } satisfies Record<string, EventCopy>;
 
