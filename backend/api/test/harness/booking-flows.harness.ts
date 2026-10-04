@@ -17,6 +17,7 @@ import request from 'supertest';
 import { createHmac } from 'node:crypto';
 
 import { AppModule } from '../../src/app.module';
+import { DEMO_ADMIN_MFA_CODE } from '../../src/auth/auth.service';
 import { configureApp } from '../../src/bootstrap';
 import { PrismaService } from '../../src/database/prisma.service';
 import { PlatformSettingsService } from '../../src/platform-settings/platform-settings.service';
@@ -749,7 +750,7 @@ export async function createBookingFlowsHarness(): Promise<Harness> {
       const challenge = await request(app.getHttpServer())
         .post('/api/v1/auth/admin/verify-mfa')
         .set('Authorization', `Bearer ${token}`)
-        .send({ code: '000000' })
+        .send({ code: DEMO_ADMIN_MFA_CODE })
         .expect(200);
       token = challenge.body.data.token as string;
     }

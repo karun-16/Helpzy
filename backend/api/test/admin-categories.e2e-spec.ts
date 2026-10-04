@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
+import { DEMO_ADMIN_MFA_CODE } from '../src/auth/auth.service';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { APP_CONFIG, type AppConfigRef } from '../src/config/app-config.token';
@@ -114,7 +115,7 @@ describe('Admin categories (e2e)', () => {
       const challenge = await request(app.getHttpServer())
         .post('/api/v1/auth/admin/verify-mfa')
         .set('Authorization', `Bearer ${token}`)
-        .send({ code: '000000' })
+        .send({ code: DEMO_ADMIN_MFA_CODE })
         .expect(200);
       token = challenge.body.data.token as string;
     }

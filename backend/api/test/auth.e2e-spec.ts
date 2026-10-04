@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { APP_CONFIG, type AppConfigRef } from '../src/config/app-config.token';
 import { PrismaService } from '../src/database/prisma.service';
+import { DEMO_ADMIN_MFA_CODE } from '../src/auth/auth.service';
 import type { AppConfig } from '../src/config/env';
 
 describe('Auth (e2e)', () => {
@@ -508,10 +509,202 @@ describe('Auth (e2e)', () => {
     const mfaResponse = await request(app.getHttpServer())
       .post('/api/v1/auth/admin/verify-mfa')
       .set('Authorization', `Bearer ${adminToken.body.data.token}`)
-      .send({ code: '000000' })
+      .send({ code: DEMO_ADMIN_MFA_CODE })
       .expect(200);
 
     expect(mfaResponse.body.data.user.role).toBe('ADMIN');
+  });
+
+  /**
+   * The demo second factor.
+   *
+   * The code is a fixed, shared value so a presenter can type it, which means it
+   * is not a secret. These tests pin the behaviour that still has to hold: it is
+   * the only accepted value, the challenge is still single-use, still expires,
+   * still spends a bounded number of attempts, and still only ever completes for
+   * an account the database says is an admin.
+   */
+  describe('admin MFA second factor', () => {
+    function account(overrides: { id: string; phone: string; role: string; fullName: string }) {
+      return {
+        id: overrides.id,
+        email: `${overrides.id}@helpzy.test`,
+        phone: overrides.phone,
+        fullName: overrides.fullName,
+        role: overrides.role,
+        status: 'ACTIVE',
+        passwordHash: 'hashed',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    }
+
+    /**
+     * Signs in and returns the session token, which still carries no MFA claim.
+     *
+     * Each caller uses its own phone number: the OTP request budget is three per
+     * number per window, and these tests would otherwise exhaust each other's.
+     */
+    async function signIn(user: ReturnType<typeof account>) {
+      prisma.user.findUnique.mockResolvedValue(user);
+
+      const otpResponse = await request(app.getHttpServer())
+        .post('/api/v1/auth/request-otp')
+        .send({ phone: user.phone })
+        .expect(200);
+
+      const verified = await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-otp')
+        .send({ phone: user.phone, otp: otpResponse.body.data.otp })
+        .expect(200);
+
+      // The code must never travel to the client.
+      expect(JSON.stringify(verified.body)).not.toContain(DEMO_ADMIN_MFA_CODE);
+
+      return verified.body.data.token as string;
+    }
+
+    it('completes with the demo code and then opens the admin route', async () => {
+      const token = await signIn(
+        account({
+          id: 'admin-mfa-ok',
+          phone: '+919800000011',
+          role: 'ADMIN',
+          fullName: 'Aditi Rao',
+        }),
+      );
+
+      const blocked = await request(app.getHttpServer())
+        .get('/api/v1/admin/dashboard')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+      expect(blocked.body.error.code).toBe('MFA_REQUIRED');
+
+      const verified = await request(app.getHttpServer())
+        .post('/api/v1/auth/admin/verify-mfa')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: DEMO_ADMIN_MFA_CODE })
+        .expect(200);
+
+      expect(verified.body.data.mfaRequired).toBe(false);
+      expect(verified.body.data.user.mfaVerified).toBe(true);
+      expect(JSON.stringify(verified.body)).not.toContain(DEMO_ADMIN_MFA_CODE);
+
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/dashboard')
+        .set('Authorization', `Bearer ${verified.body.data.token}`)
+        .expect(200);
+    });
+
+    it('rejects any other code', async () => {
+      const token = await signIn(
+        account({
+          id: 'admin-mfa-wrong',
+          phone: '+919800000012',
+          role: 'ADMIN',
+          fullName: 'Aditi Rao',
+        }),
+      );
+
+      const rejected = await request(app.getHttpServer())
+        .post('/api/v1/auth/admin/verify-mfa')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: '999999' })
+        .expect(401);
+
+      expect(rejected.body.error.code).toBe('MFA_INVALID');
+      expect(rejected.body.error.message).toBe(
+        'The MFA code does not match the one that was issued.',
+      );
+    });
+
+    it('keeps the attempt ceiling, so a wrong code cannot be brute forced', async () => {
+      const token = await signIn(
+        account({
+          id: 'admin-mfa-brute',
+          phone: '+919800000013',
+          role: 'ADMIN',
+          fullName: 'Aditi Rao',
+        }),
+      );
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/admin/verify-mfa')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ code: '999999' })
+          .expect(401);
+      }
+
+      // The challenge is spent, so even the correct code no longer works.
+      const spent = await request(app.getHttpServer())
+        .post('/api/v1/auth/admin/verify-mfa')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: DEMO_ADMIN_MFA_CODE })
+        .expect(401);
+
+      expect(spent.body.error.message).toBe('The MFA code is invalid or has expired.');
+    });
+
+    it('rejects a challenge that has expired', async () => {
+      // Read here rather than at describe scope: `app` only exists after the
+      // enclosing beforeAll has run.
+      const mfaTtlSeconds = app.get<AppConfigRef>(APP_CONFIG).mfaTtlSeconds;
+      const originalNow = Date.now();
+      let currentNow = originalNow;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentNow);
+
+      try {
+        const token = await signIn(
+          account({
+            id: 'admin-mfa-stale',
+            phone: '+919800000014',
+            role: 'ADMIN',
+            fullName: 'Aditi Rao',
+          }),
+        );
+
+        currentNow += mfaTtlSeconds * 1000 + 1;
+
+        const stale = await request(app.getHttpServer())
+          .post('/api/v1/auth/admin/verify-mfa')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ code: DEMO_ADMIN_MFA_CODE })
+          .expect(401);
+
+        expect(stale.body.error.code).toBe('MFA_INVALID');
+        expect(stale.body.error.message).toBe('The MFA code is invalid or has expired.');
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('refuses a non-admin session even when the code is correct', async () => {
+      const token = await signIn(
+        account({
+          id: 'professional-mfa',
+          phone: '+919800000015',
+          role: 'PROFESSIONAL',
+          fullName: 'Meera Iyer',
+        }),
+      );
+
+      const refused = await request(app.getHttpServer())
+        .post('/api/v1/auth/admin/verify-mfa')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: DEMO_ADMIN_MFA_CODE })
+        .expect(403);
+
+      expect(refused.body.error.code).toBe('FORBIDDEN');
+
+      // And the role guard is unchanged: no admin route opens for a professional.
+      const blocked = await request(app.getHttpServer())
+        .get('/api/v1/admin/dashboard')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+
+      expect(blocked.body.error.code).toBe('FORBIDDEN');
+    });
   });
 });
 

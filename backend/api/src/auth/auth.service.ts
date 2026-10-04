@@ -71,6 +71,26 @@ const OTP_REQUEST_WINDOW_MS = 10 * 60 * 1000;
  */
 const OTP_VERIFY_ATTEMPT_LIMIT = 5;
 
+/**
+ * The second factor the demo admin types on the MFA screen.
+ *
+ * This is a fixed, *known* value on purpose: the demonstration has no
+ * authenticator app and no delivery channel for a second factor, so it has to be
+ * something the presenter can type from memory. The cost is that MFA is no longer
+ * a second factor at all - anyone who reads this repository, and anyone who
+ * guesses the admin phone number, can complete admin verification.
+ *
+ * Acceptable only while this deployment is a closed college demonstration with a
+ * throwaway admin account. Before real users are admitted, delete this constant
+ * and verify a code that is delivered out of band (TOTP) or generated per session
+ * and stored with the challenge.
+ *
+ * Deliberately backend-only: it is never placed in a response body, returned to a
+ * client, or written to a log, so the frontend is not a place it can leak from.
+ * Exported so tests assert against the same value instead of restating it.
+ */
+export const DEMO_ADMIN_MFA_CODE = '162006';
+
 interface UserRecord {
   id: string;
   email: string | null;
@@ -118,6 +138,7 @@ const FALLBACK_USERS: Record<string, UserRecord> = {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private warnedAboutInMemoryChallenges = false;
+  private warnedAboutSharedMfaCode = false;
   private readonly otpChallenges = new Map<string, StoredOtpChallenge>();
   private readonly registrationOtpChallenges = new Map<string, RegistrationOtpChallenge>();
   private readonly mfaChallenges = new Map<string, StoredOtpChallenge>();
@@ -366,12 +387,14 @@ export class AuthService {
     }
 
     if (user.role === ROLES.ADMIN) {
-      const adminMfaCode =
-        this.config.nodeEnv === 'production' ? this.buildMfaCode(normalizedPhone) : '000000';
+      if (this.config.isProduction) {
+        this.warnAboutSharedMfaCode();
+      }
+
       this.mfaChallenges.set(normalizedPhone, {
         phone: normalizedPhone,
         userId: user.id,
-        code: adminMfaCode,
+        code: DEMO_ADMIN_MFA_CODE,
         expiresAt: Date.now() + this.config.mfaTtlSeconds * 1000,
         attempts: 0,
       });
@@ -491,11 +514,21 @@ export class AuthService {
     };
   }
 
-  private buildMfaCode(phone: string): string {
-    const source = `${phone}:${this.config.authJwtSecret}`;
-    const hash = createHash('sha256').update(source).digest('hex');
-    const numeric = Number.parseInt(hash.slice(0, 6), 16) % 1_000_000;
-    return String(numeric).padStart(6, '0');
+  /**
+   * Records, once per process, that admin MFA is a shared demo factor.
+   *
+   * The warning deliberately does not include the code: a log aggregator is exactly
+   * the kind of place this value must not end up.
+   */
+  private warnAboutSharedMfaCode(): void {
+    if (this.warnedAboutSharedMfaCode) {
+      return;
+    }
+
+    this.warnedAboutSharedMfaCode = true;
+    this.logger.warn(
+      'Admin MFA is using the shared college-demo code. This deployment must not be opened to real users.',
+    );
   }
 
   private createOtpCode(): string {
