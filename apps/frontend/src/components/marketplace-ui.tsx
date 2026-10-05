@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import helpzyLogo from '../../assets/helpzy.png';
 
 import { Popover } from '@/components/popover';
+import { LocationSelector } from '@/components/location-selector';
 import { PlatformNoticeBanner } from '@/components/platform-notice-banner';
 import { appConfig, resolveMediaUrl } from '@/lib/config';
 import { api } from '@/lib/api';
@@ -597,6 +598,10 @@ export function MarketplaceHeader({
           />
           <Text className="text-2xl font-black text-primary">HELPZY</Text>
         </Pressable>
+
+        {/* The marketplace is scoped to a city, so the city is a first-class piece
+            of navigation chrome rather than a filter buried in the page body. */}
+        <LocationSelector />
 
         <View className="flex-row flex-wrap items-center gap-2 sm:gap-3">
           {role ? (

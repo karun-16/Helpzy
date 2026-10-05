@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useColorScheme as useNativeWindColorScheme } from 'nativewind';
+import { nearestMarketplaceLocation } from '@helpzy/config';
 
 import {
   readAuthSession,
@@ -12,6 +13,13 @@ import {
   type SessionRole,
   type ThemePreference,
 } from './auth-session';
+import {
+  readMarketplaceLocation,
+  subscribeMarketplaceLocation,
+  toPublicLocation,
+  writeMarketplaceLocation,
+} from './location-session';
+import type { MarketplaceLocationSelection } from '@helpzy/types';
 
 /**
  * The signed-in session, kept live.
@@ -122,6 +130,107 @@ export function useThemePreference(): [ThemePreference, (next: ThemePreference) 
   );
 
   return [preference, setPreference];
+}
+
+/**
+ * Where the customer currently wants to find services.
+ *
+ * `null` until a location is chosen, which the marketplace treats as "ask first"
+ * rather than "show everyone".
+ */
+export function useMarketplaceLocation(): MarketplaceLocationSelection | null {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeMarketplaceLocation(listener),
+    [],
+  );
+  const getSnapshot = useCallback(() => readMarketplaceLocation(), []);
+
+  return useSyncExternalStore(subscribe, getSnapshot, () => null);
+}
+
+/** Why a detection attempt ended. `resolved` means a location was written. */
+export type LocationDetectionState =
+  'idle' | 'detecting' | 'resolved' | 'denied' | 'unavailable' | 'failed';
+
+/**
+ * Turns a device GPS fix into a marketplace city.
+ *
+ * The fix is matched against city centroids already in `@helpzy/config`, so this
+ * needs no geocoding service, no API key and no network call, and the coordinates
+ * are discarded the moment a city is chosen - they are never stored for the
+ * customer and never sent anywhere.
+ *
+ * `auto` runs the attempt once on mount, which is what the marketplace wants on a
+ * first visit. Failures are reported rather than swallowed so the UI can offer
+ * manual selection instead of leaving an unexplained empty marketplace.
+ */
+export function useLocationDetection(auto = false): {
+  state: LocationDetectionState;
+  detect: () => void;
+} {
+  const [state, setState] = useState<LocationDetectionState>('idle');
+  const attemptedRef = useRef(false);
+  /*
+   * `auto` is read from inside the geolocation callback, which is long after this
+   * render, so it has to be captured rather than closed over - otherwise `detect`
+   * would be rebuilt whenever it changed. It is mirrored into a ref in an effect
+   * rather than during render, which is what keeps a ref write out of the render
+   * path.
+   */
+  const autoRef = useRef(auto);
+  useEffect(() => {
+    autoRef.current = auto;
+  }, [auto]);
+
+  const detect = useCallback(() => {
+    const geolocation =
+      typeof navigator !== 'undefined' ? (navigator as Navigator).geolocation : undefined;
+
+    if (!geolocation) {
+      setState('unavailable');
+      return;
+    }
+
+    setState('detecting');
+    geolocation.getCurrentPosition(
+      (position) => {
+        const nearest = nearestMarketplaceLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+
+        if (!nearest) {
+          setState('failed');
+          return;
+        }
+
+        /*
+         * An automatic attempt never overwrites a choice the customer already
+         * made - it can lose a race with the picker, and a deliberate choice must
+         * win. An explicit tap on "Use my current location" always applies.
+         */
+        if (autoRef.current && readMarketplaceLocation()) {
+          setState('resolved');
+          return;
+        }
+
+        writeMarketplaceLocation(toPublicLocation(nearest), 'detected');
+        setState('resolved');
+      },
+      (error) => {
+        setState(error.code === error.PERMISSION_DENIED ? 'denied' : 'failed');
+      },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 300_000 },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!auto || attemptedRef.current) return;
+    attemptedRef.current = true;
+    detect();
+  }, [auto, detect]);
+
+  return { state, detect };
 }
 
 /**

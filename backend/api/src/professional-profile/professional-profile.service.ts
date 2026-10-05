@@ -4,6 +4,7 @@ import type { ProfessionalOwnProfileDto, UpdateProfessionalProfileDto } from '@h
 import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
+import { LocationCatalogService } from '../location-catalog/location-catalog.service';
 import { ProfilePhotoService, type AllowedProfileImageType } from '../media/profile-photo.service';
 
 /**
@@ -18,6 +19,7 @@ export class ProfessionalProfileService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly profilePhotos: ProfilePhotoService,
+    private readonly locations: LocationCatalogService,
   ) {}
 
   uploadAvatar(userId: string, input: { data: string; contentType: AllowedProfileImageType }) {
@@ -39,6 +41,7 @@ export class ProfessionalProfileService {
             businessName: true,
             bio: true,
             serviceArea: true,
+            location: { select: { slug: true, state: true, district: true, city: true } },
             contactEmail: true,
             isPhoneVisible: true,
             yearsOfExperience: true,
@@ -77,6 +80,7 @@ export class ProfessionalProfileService {
       businessName: profile.businessName,
       bio: profile.bio,
       serviceArea: profile.serviceArea,
+      location: profile.location,
       contactEmail: profile.contactEmail,
       isPhoneVisible: profile.isPhoneVisible,
       // The schema has these as nullable, and an unset value is shown as unset
@@ -99,6 +103,14 @@ export class ProfessionalProfileService {
   ): Promise<ProfessionalOwnProfileDto> {
     await this.getProfileRow(userId);
 
+    // Resolved before the transaction so an unknown slug is rejected before any
+    // write happens. `undefined` means "not supplied" and leaves the location
+    // alone; an explicit `null` clears it.
+    const locationId =
+      input.locationSlug === undefined
+        ? undefined
+        : ((await this.locations.optional(input.locationSlug))?.id ?? null);
+
     // `fullName` and `avatarUrl` live on the user, everything else on the
     // profile. Split so neither table can be given a field it does not own.
     await this.prisma.$transaction(async (transaction) => {
@@ -118,6 +130,7 @@ export class ProfessionalProfileService {
           ...(input.businessName !== undefined ? { businessName: input.businessName } : {}),
           ...(input.bio !== undefined ? { bio: input.bio } : {}),
           ...(input.serviceArea !== undefined ? { serviceArea: input.serviceArea } : {}),
+          ...(locationId !== undefined ? { locationId } : {}),
           ...(input.contactEmail !== undefined ? { contactEmail: input.contactEmail } : {}),
           ...(input.isPhoneVisible !== undefined ? { isPhoneVisible: input.isPhoneVisible } : {}),
           ...(input.yearsOfExperience !== undefined

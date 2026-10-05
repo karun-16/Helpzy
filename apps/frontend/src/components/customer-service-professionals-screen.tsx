@@ -7,7 +7,7 @@ import { CustomerMarketplaceHeader } from '@/components/customer-marketplace-hea
 import { ProfessionalCard } from '@/components/professional-card';
 import { api } from '@/lib/api';
 import { clearAuthSession } from '@/lib/auth-session';
-import { useAuthSession } from '@/lib/hooks';
+import { useAuthSession, useMarketplaceLocation } from '@/lib/hooks';
 
 type ServiceProfessionals = Awaited<
   ReturnType<typeof api.customerDiscovery.getProfessionalsForService>
@@ -22,7 +22,20 @@ export function CustomerServiceProfessionalsScreen() {
     error: boolean;
   } | null>(null);
   const [retry, setRetry] = useState(0);
-  const requestKey = `${serviceId ?? ''}:${retry}`;
+
+  /*
+   * The selected marketplace city is part of this request's identity, exactly as it
+   * is on the home screen. Folding the slug into `requestKey` means switching from
+   * Tirupati to Vijayawada while sitting on this page re-fetches instead of
+   * leaving the previous city's professionals on screen under the same service
+   * heading.
+   *
+   * With no city chosen the request is sent without a location, which preserves
+   * the pre-location behaviour for a direct link.
+   */
+  const location = useMarketplaceLocation();
+  const locationSlug = location?.location.slug ?? null;
+  const requestKey = `${serviceId ?? ''}:${locationSlug ?? ''}:${retry}`;
   const currentResult = result?.key === requestKey ? result.data : null;
   const loading = Boolean(serviceId) && result?.key !== requestKey;
   const error = !serviceId || (result?.key === requestKey && result.error);
@@ -31,7 +44,7 @@ export function CustomerServiceProfessionalsScreen() {
     if (!serviceId) return;
     const controller = new AbortController();
     api.customerDiscovery
-      .getProfessionalsForService(serviceId, controller.signal)
+      .getProfessionalsForService(serviceId, controller.signal, locationSlug)
       .then((data) => setResult({ key: requestKey, data, error: false }))
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -39,7 +52,7 @@ export function CustomerServiceProfessionalsScreen() {
         }
       });
     return () => controller.abort();
-  }, [requestKey, serviceId]);
+  }, [requestKey, serviceId, locationSlug]);
 
   const session = useAuthSession();
   const logout = () => {
@@ -100,9 +113,20 @@ export function CustomerServiceProfessionalsScreen() {
                 </Text>
               ) : null}
               <Text className="mt-8 text-xl font-bold text-primary">Available Professionals</Text>
+              {location ? (
+                <Text className="mt-1 text-sm text-secondary">
+                  Showing professionals in {location.location.city}
+                  {location.location.district !== location.location.city
+                    ? `, ${location.location.district}`
+                    : ''}
+                  .
+                </Text>
+              ) : null}
               {currentResult.professionals.length === 0 ? (
                 <Text className="mt-3 rounded-xl border border-hairline dark:border-hairline-strong bg-surface px-5 py-6 text-sm text-secondary">
-                  No professionals found for this service.
+                  {location
+                    ? `No professionals offer this service in ${location.location.city} yet.`
+                    : 'No professionals found for this service.'}
                 </Text>
               ) : (
                 <View className="mt-4 flex-row flex-wrap gap-3">

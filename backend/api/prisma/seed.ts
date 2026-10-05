@@ -9,8 +9,11 @@
  *    updates rather than duplicating.
  *
  */
+import { findMarketplaceLocation } from '@helpzy/config';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
+
+import { seedLocations } from './seed-locations';
 
 if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
   throw new Error('Database seeding is restricted to development and test environments.');
@@ -61,6 +64,18 @@ const CATEGORIES = [
   },
 ] as const;
 
+/**
+ * Development professionals, deliberately spread across several Andhra Pradesh
+ * cities.
+ *
+ * The marketplace is location-filtered, so a demo with every professional in one
+ * place cannot demonstrate the feature at all: switching to another city would
+ * return nothing. Two cities already prove the filter works; five make the
+ * demonstration legible without inventing a large cast.
+ *
+ * `locationSlug` values come from `@helpzy/config`, the same dataset the picker
+ * and the API use, so a fixture cannot register a place the app does not know.
+ */
 const USERS = [
   {
     email: 'admin@helpzy.test',
@@ -81,7 +96,8 @@ const USERS = [
     role: 'PROFESSIONAL' as const,
     businessName: 'Meera Home Care',
     bio: 'Deep cleaning and appliance servicing since 2016.',
-    serviceArea: 'Bengaluru',
+    serviceArea: 'Tirupati',
+    locationSlug: 'ap-tirupati-tirupati',
     verification: 'VERIFIED' as const,
   },
   {
@@ -91,7 +107,41 @@ const USERS = [
     role: 'PROFESSIONAL' as const,
     businessName: 'Sameer Fitness Studio',
     bio: 'Personal training and injury rehabilitation.',
-    serviceArea: 'Bengaluru',
+    serviceArea: 'Vijayawada',
+    locationSlug: 'ap-ntr-vijayawada',
+    verification: 'PENDING' as const,
+  },
+  {
+    email: 'ravali@helpzy.test',
+    fullName: 'Ravali Prasad',
+    phone: '+919800000005',
+    role: 'PROFESSIONAL' as const,
+    businessName: 'Ravali Electrical Works',
+    bio: 'Wiring, switchboards and appliance installation.',
+    serviceArea: 'Visakhapatnam',
+    locationSlug: 'ap-visakhapatnam-visakhapatnam',
+    verification: 'VERIFIED' as const,
+  },
+  {
+    email: 'anitha@helpzy.test',
+    fullName: 'Anitha Sharma',
+    phone: '+919800000006',
+    role: 'PROFESSIONAL' as const,
+    businessName: 'Anitha Beauty Parlour',
+    bio: 'Bridal makeup, facial and home service.',
+    serviceArea: 'Nellore',
+    locationSlug: 'ap-spsr-nellore-nellore',
+    verification: 'VERIFIED' as const,
+  },
+  {
+    email: 'suresh@helpzy.test',
+    fullName: 'Suresh Reddy',
+    phone: '+919800000007',
+    role: 'PROFESSIONAL' as const,
+    businessName: 'Reddy Carpentry',
+    bio: 'Furniture repair and custom wooden fittings.',
+    serviceArea: 'Guntur',
+    locationSlug: 'ap-guntur-guntur',
     verification: 'PENDING' as const,
   },
 ];
@@ -173,6 +223,9 @@ async function seedUsers(): Promise<void> {
         businessName: entry.businessName,
         bio: entry.bio,
         serviceArea: entry.serviceArea,
+        // Resolved through the shared dataset, so a fixture slug that does not
+        // exist fails the seed loudly instead of writing a dangling reference.
+        ...(entry.locationSlug ? { locationId: await resolveLocationId(entry.locationSlug) } : {}),
         verification: entry.verification,
         verifiedAt: entry.verification === 'VERIFIED' ? new Date() : null,
       },
@@ -181,11 +234,35 @@ async function seedUsers(): Promise<void> {
         businessName: entry.businessName,
         bio: entry.bio,
         serviceArea: entry.serviceArea,
+        locationId: entry.locationSlug ? await resolveLocationId(entry.locationSlug) : null,
         verification: entry.verification,
         verifiedAt: entry.verification === 'VERIFIED' ? new Date() : null,
       },
     });
   }
+}
+
+/**
+ * Resolves a dataset slug to a `locations` row, refusing to guess.
+ *
+ * The location seed runs before the users, so a typo surfaces as one clear
+ * failure naming the bad slug rather than as professionals silently missing from
+ * the marketplace.
+ */
+async function resolveLocationId(slug: string): Promise<string> {
+  const known = findMarketplaceLocation(slug);
+  if (!known) {
+    throw new Error(
+      `Seed location "${slug}" is not in the @helpzy/config dataset. Add it there, or fix the seed.`,
+    );
+  }
+
+  const row = await prisma.location.findUnique({ where: { slug }, select: { id: true } });
+  if (!row) {
+    throw new Error(`Location "${slug}" has no row in the locations table.`);
+  }
+
+  return row.id;
 }
 
 async function seedCategories(): Promise<void> {
@@ -293,6 +370,8 @@ async function seedBooking(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Places first: every professional below is filed under one.
+  await seedLocations(prisma);
   await seedUsers();
   await seedCategories();
   await seedServices();

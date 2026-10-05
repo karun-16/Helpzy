@@ -140,6 +140,13 @@ describe('Marketplace (e2e)', () => {
     serviceCategory: { findUnique: jest.fn(), findMany: jest.fn() },
     auditLog: { create: jest.fn(), findMany: jest.fn() },
     mediaAsset: { upsert: jest.fn() },
+    // Resolves a marketplace slug to a `locations` row. Default `null` keeps every
+    // pre-existing assertion in this suite unchanged: nothing else sends a slug.
+    // The explicit return type is required - without it Jest infers `Promise<null>`
+    // and every `mockResolvedValue(row)` becomes a type error.
+    location: {
+      findUnique: jest.fn(async (): Promise<Record<string, string> | null> => null),
+    },
   };
 
   beforeAll(async () => {
@@ -1286,6 +1293,119 @@ describe('Marketplace (e2e)', () => {
         .expect(400);
 
       expect(prisma.professionalProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    /*
+     * Location persistence on the profile screen: the three states a professional
+     * can put the column in - set, unchanged, cleared.
+     */
+    describe('professional location', () => {
+      const TIRUPATI = {
+        id: 'location-tirupati',
+        slug: 'ap-tirupati-tirupati',
+        state: 'Andhra Pradesh',
+        district: 'Tirupati',
+        city: 'Tirupati',
+      };
+      const VIJAYAWADA = {
+        id: 'location-vijayawada',
+        slug: 'ap-ntr-vijayawada',
+        state: 'Andhra Pradesh',
+        district: 'NTR',
+        city: 'Vijayawada',
+      };
+
+      beforeEach(() => {
+        prisma.professionalProfile.updateMany.mockResolvedValue({ count: 1 });
+      });
+
+      afterEach(() => {
+        prisma.location.findUnique.mockReset();
+        prisma.location.findUnique.mockResolvedValue(null);
+      });
+
+      it('writes the resolved location id when a slug is supplied', async () => {
+        prisma.location.findUnique.mockResolvedValue(VIJAYAWADA);
+
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ locationSlug: VIJAYAWADA.slug })
+          .expect(200);
+
+        expect(prisma.professionalProfile.updateMany).toHaveBeenCalledWith({
+          where: { userId: PROFESSIONAL_USER_ID },
+          data: { locationId: VIJAYAWADA.id },
+        });
+      });
+
+      it('can move a professional to another city', async () => {
+        prisma.location.findUnique.mockResolvedValue(TIRUPATI);
+
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ locationSlug: TIRUPATI.slug })
+          .expect(200);
+
+        expect(prisma.professionalProfile.updateMany).toHaveBeenCalledWith({
+          where: { userId: PROFESSIONAL_USER_ID },
+          data: { locationId: TIRUPATI.id },
+        });
+      });
+
+      it('clears the location on an explicit null, returning them to no marketplace', async () => {
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ locationSlug: null })
+          .expect(200);
+
+        // The honest outcome for "I do not serve a listed city": null, not a guess.
+        expect(prisma.professionalProfile.updateMany).toHaveBeenCalledWith({
+          where: { userId: PROFESSIONAL_USER_ID },
+          data: { locationId: null },
+        });
+      });
+
+      it('leaves the location alone when the field is omitted entirely', async () => {
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ businessName: 'Renamed Studio' })
+          .expect(200);
+
+        const call = prisma.professionalProfile.updateMany.mock.calls.at(-1)?.[0] as {
+          data: Record<string, unknown>;
+        };
+        expect(call.data.businessName).toBe('Renamed Studio');
+        expect(call.data).not.toHaveProperty('locationId');
+        expect(prisma.location.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('rejects an unknown slug without writing anything', async () => {
+        prisma.professionalProfile.updateMany.mockClear();
+
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ locationSlug: 'ap-nowhere-nowhere' })
+          .expect(400);
+
+        expect(prisma.professionalProfile.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('never accepts a free-text city name in place of a slug', async () => {
+        prisma.professionalProfile.updateMany.mockClear();
+
+        await request(app.getHttpServer())
+          .patch('/api/v1/professional/profile')
+          .set('Authorization', `Bearer ${professionalToken()}`)
+          .send({ locationSlug: 'Tirupati' })
+          .expect(400);
+
+        expect(prisma.professionalProfile.updateMany).not.toHaveBeenCalled();
+      });
     });
 
     it('reports a real completion count rather than a stored number', async () => {

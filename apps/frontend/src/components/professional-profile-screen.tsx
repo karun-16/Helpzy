@@ -15,6 +15,7 @@ import {
   ScreenShell,
   SectionHeading,
 } from '@/components/marketplace-ui';
+import { MarketplaceLocationField } from '@/components/marketplace-location-field';
 import { ProfilePhotoEditor } from '@/components/profile-photo-editor';
 import { VerifiedBadge } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
@@ -53,6 +54,7 @@ export function ProfessionalProfileScreen() {
   const [businessName, setBusinessName] = useState('');
   const [bio, setBio] = useState('');
   const [serviceArea, setServiceArea] = useState('');
+  const [locationSlug, setLocationSlug] = useState<string | null>(null);
   const [contactEmail, setContactEmail] = useState('');
   const [yearsOfExperience, setYearsOfExperience] = useState('');
   const [isPhoneVisible, setIsPhoneVisible] = useState(false);
@@ -80,6 +82,7 @@ export function ProfessionalProfileScreen() {
           setBusinessName(data.businessName);
           setBio(data.bio ?? '');
           setServiceArea(data.serviceArea ?? '');
+          setLocationSlug(data.location?.slug ?? null);
           setContactEmail(data.contactEmail ?? '');
           setYearsOfExperience(
             data.yearsOfExperience === null ? '' : String(data.yearsOfExperience),
@@ -117,6 +120,7 @@ export function ProfessionalProfileScreen() {
         businessName,
         bio: bio.trim() === '' ? null : bio.trim(),
         serviceArea: serviceArea.trim() === '' ? null : serviceArea.trim(),
+        locationSlug,
         contactEmail: contactEmail.trim() === '' ? null : contactEmail.trim(),
         yearsOfExperience: years,
         isPhoneVisible,
@@ -275,11 +279,22 @@ export function ProfessionalProfileScreen() {
                 onChangeText={setBusinessName}
               />
               <LabelledInput label="Bio" value={bio} onChangeText={setBio} multiline />
+              {/*
+                The city that decides which marketplace this professional appears
+                in. Separate from the free-text "service area" above, which is a
+                human description ("South Bengaluru") and cannot be filtered on.
+              */}
+              <MarketplaceLocationField
+                value={locationSlug}
+                onChange={setLocationSlug}
+                label="Where you work"
+                hint="Customers see you in this city. Without it you are not listed anywhere."
+              />
               <LabelledInput
                 label="Service area"
                 value={serviceArea}
                 onChangeText={setServiceArea}
-                placeholder="Bengaluru"
+                placeholder="e.g. South Bengaluru"
               />
               <LabelledInput
                 label="Contact email (optional)"

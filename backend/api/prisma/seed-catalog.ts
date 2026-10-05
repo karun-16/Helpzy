@@ -48,7 +48,10 @@
  * environment, which is what makes the confirmation meaningful.
  */
 import { Prisma, PrismaClient } from '@prisma/client';
+import { findMarketplaceLocation } from '@helpzy/config';
 import { randomBytes } from 'node:crypto';
+
+import { seedLocations, type LocationSeedClient } from './seed-locations';
 
 /** Operator-supplied acknowledgement that a production write is intended. */
 export const CONFIRMATION_TOKEN = 'catalogue-production-v1';
@@ -88,6 +91,13 @@ export interface CatalogueProfessional {
   bio: string;
   serviceArea: string;
   verification: 'VERIFIED' | 'PENDING';
+  /**
+   * Where this professional trades, as a dataset slug.
+   *
+   * Two different cities on purpose: a catalogue seeded into a single city cannot
+   * demonstrate that the marketplace filter actually excludes anyone.
+   */
+  locationSlug: string;
 }
 
 export interface CatalogueService {
@@ -123,11 +133,25 @@ export interface ProfileUpdate {
   bio: string;
   serviceArea: string;
   verification: 'VERIFIED' | 'PENDING';
+  /**
+   * The marketplace location, reasserted on every run.
+   *
+   * Present on the update type - unlike activation state - because it is this
+   * script's own reference data rather than an administrator's decision, so a
+   * catalogue change must reach the database.
+   */
+  locationId: string | null;
 }
 
 export interface ProfileWrite extends ProfileUpdate {
   userId: string;
   verifiedAt: Date | null;
+  /**
+   * Null when the professional skipped the picker. They are then in no city's
+   * marketplace until they complete their profile, which is better than being
+   * filed under a place they never chose.
+   */
+  locationId: string | null;
 }
 
 /**
@@ -172,6 +196,7 @@ export interface ServiceCreate extends ServiceUpdate {
  * without standing up a database.
  */
 export interface CataloguePrisma {
+  location: LocationSeedClient['location'];
   user: {
     findUnique(args: {
       where: { email: string };
@@ -186,6 +211,8 @@ export interface CataloguePrisma {
       update: ProfileUpdate;
       create: ProfileWrite;
     }): Promise<unknown>;
+    /** Read only, used by the location prune to avoid orphaning a professional. */
+    count(args: { where: { locationId: { in: string[] } } }): Promise<number>;
   };
   serviceCategory: {
     upsert(args: {
@@ -255,7 +282,8 @@ export const PROFESSIONALS: readonly CatalogueProfessional[] = [
     fullName: 'Meera Iyer',
     businessName: 'Meera Home Care',
     bio: 'Deep cleaning and appliance servicing since 2016.',
-    serviceArea: 'Bengaluru',
+    serviceArea: 'Tirupati',
+    locationSlug: 'ap-tirupati-tirupati',
     verification: 'VERIFIED',
   },
   {
@@ -263,7 +291,8 @@ export const PROFESSIONALS: readonly CatalogueProfessional[] = [
     fullName: 'Sameer Khan',
     businessName: 'Sameer Fitness Studio',
     bio: 'Personal training and injury rehabilitation.',
-    serviceArea: 'Bengaluru',
+    serviceArea: 'Vijayawada',
+    locationSlug: 'ap-ntr-vijayawada',
     verification: 'PENDING',
   },
 ] as const;
@@ -421,6 +450,7 @@ export function buildProfileWrite(
   professional: CatalogueProfessional,
   userId: string,
   createdAt: Date,
+  locationId: string | null,
 ): ProfileWrite {
   return {
     userId,
@@ -431,7 +461,30 @@ export function buildProfileWrite(
     // Only meaningful on insert: rewriting it on every run would make the
     // timestamp depend on when the seed happened to be re-executed.
     verifiedAt: professional.verification === 'VERIFIED' ? createdAt : null,
+    locationId,
   };
+}
+
+/**
+ * Resolves a dataset slug to a `locations` row, refusing to guess.
+ *
+ * A slug that is not in `@helpzy/config`, or a dataset entry the location seed did
+ * not write, is an error rather than a silent null - a professional quietly filed
+ * under nowhere is much harder to notice than a failed seed.
+ */
+export async function resolveLocationId(prisma: LocationSeedClient, slug: string): Promise<string> {
+  if (!findMarketplaceLocation(slug)) {
+    throw new Error(
+      `Catalogue location "${slug}" is not in the @helpzy/config dataset. Add it there, or fix the seed.`,
+    );
+  }
+
+  const row = await prisma.location.findUnique({ where: { slug } });
+  if (!row?.id) {
+    throw new Error(`Location "${slug}" has no row in the locations table.`);
+  }
+
+  return row.id;
 }
 
 export function buildCategoryUpdate(category: CatalogueCategory): CategoryUpdate {
@@ -498,6 +551,10 @@ export async function seedCatalogue(prisma: CataloguePrisma): Promise<CatalogueS
 
   const ownerIdsByEmail = new Map<string, string>();
 
+  // Places first: the professionals below are filed under them, and a missing row
+  // would otherwise surface as "no such column" deep inside the user insert.
+  await seedLocations(prisma);
+
   for (const professional of PROFESSIONALS) {
     const existing = await prisma.user.findUnique({
       where: { email: professional.email },
@@ -517,7 +574,12 @@ export async function seedCatalogue(prisma: CataloguePrisma): Promise<CatalogueS
       summary.professionalsCreated += 1;
     }
 
-    const profile = buildProfileWrite(professional, user.id, now);
+    const profile = buildProfileWrite(
+      professional,
+      user.id,
+      now,
+      await resolveLocationId(prisma, professional.locationSlug),
+    );
     await prisma.professionalProfile.upsert({
       where: { userId: user.id },
       // `verifiedAt` is deliberately absent from the update branch: it records
@@ -527,6 +589,9 @@ export async function seedCatalogue(prisma: CataloguePrisma): Promise<CatalogueS
         bio: profile.bio,
         serviceArea: profile.serviceArea,
         verification: profile.verification,
+        // The marketplace location *is* reasserted, unlike activation state: it is
+        // this script's own reference data, not an administrator's decision.
+        locationId: profile.locationId,
       },
       create: profile,
     });

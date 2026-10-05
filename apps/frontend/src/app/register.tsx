@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
+import { MarketplaceLocationField } from '@/components/marketplace-location-field';
 import { api } from '@/lib/api';
 import { ApiError } from '@helpzy/api-client';
 import { describeOtpChallenge, describeOtpRequestOutcome } from '@/lib/demo-otp';
@@ -25,6 +26,12 @@ export default function RegisterScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [otp, setOtp] = useState('');
   const [challenge, setChallenge] = useState<{ phone: string; otp?: string } | null>(null);
+  /*
+   * Where this professional trades, captured at registration so they are listed in
+   * a city's marketplace from their very first session instead of being invisible
+   * until they remember to complete their profile.
+   */
+  const [locationSlug, setLocationSlug] = useState<string | null>(null);
   const pendingAction = useRef<'requesting' | 'verifying' | null>(null);
   const notice = challenge ? describeOtpChallenge(challenge.phone, challenge.otp) : null;
 
@@ -33,7 +40,13 @@ export default function RegisterScreen() {
     pendingAction.current = 'requesting';
     setStatus('Sending OTP...');
     try {
-      const response = await api.auth.requestRegistrationOtp({ phone, role });
+      const response = await api.auth.requestRegistrationOtp({
+        phone,
+        role,
+        // Only meaningful for a professional; the server ignores it for a customer
+        // and validates the slug either way.
+        ...(role === 'PROFESSIONAL' && locationSlug ? { locationSlug } : {}),
+      });
       setChallenge({ phone: response.phone, otp: response.otp });
       setStatus(describeOtpRequestOutcome(response.phone, response.otp));
     } catch (error) {
@@ -61,6 +74,7 @@ export default function RegisterScreen() {
         phone: challenge.phone,
         otp: otp || challenge.otp || '',
         role,
+        ...(role === 'PROFESSIONAL' && locationSlug ? { locationSlug } : {}),
       });
       writeAuthSession({ token: response.token, user: response.user });
       const redirect = readPendingAuthRedirect() ?? buildDashboardRoute(response.user.role);
@@ -102,6 +116,17 @@ export default function RegisterScreen() {
             </Pressable>
           ))}
         </View>
+
+        {role === 'PROFESSIONAL' ? (
+          <View className="mt-5">
+            <MarketplaceLocationField
+              value={locationSlug}
+              onChange={setLocationSlug}
+              label="Where you work"
+              hint="Customers only see professionals in their own city. You can change this later."
+            />
+          </View>
+        ) : null}
 
         <TextInput
           value={phone}

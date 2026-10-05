@@ -25,6 +25,7 @@ describe('Auth (e2e)', () => {
     service: { findFirst: jest.Mock };
     review: { findMany: jest.Mock };
     booking: { groupBy: jest.Mock };
+    location: { findUnique: jest.Mock };
   };
 
   beforeAll(async () => {
@@ -42,6 +43,10 @@ describe('Auth (e2e)', () => {
       service: { findFirst: jest.fn() },
       review: { findMany: jest.fn() },
       booking: { groupBy: jest.fn() },
+      // Present so `LocationCatalogService` can resolve a slug. Default `null` is
+      // the honest stub for a suite that never seeds places, and it keeps the
+      // pre-location registration assertions below meaningful.
+      location: { findUnique: jest.fn(async () => null) },
     };
 
     const transaction = {
@@ -65,6 +70,7 @@ describe('Auth (e2e)', () => {
         service: prisma.service,
         review: prisma.review,
         booking: prisma.booking,
+        location: prisma.location,
       })
       .compile();
 
@@ -380,6 +386,144 @@ describe('Auth (e2e)', () => {
     expect(verifyResponse.body.data.user.role).toBe('PROFESSIONAL');
     expect(prisma.professionalProfile.create).toHaveBeenCalledWith({
       data: { userId: createdUser.id, businessName: 'New Professional' },
+    });
+  });
+
+  /*
+   * Location persistence. Three cases only: a slug is stored, an omitted slug
+   * stores nothing, and an unknown slug is refused before a code is spent.
+   */
+  describe('professional registration location', () => {
+    const TIRUPATI = {
+      id: 'location-tirupati',
+      slug: 'ap-tirupati-tirupati',
+      state: 'Andhra Pradesh',
+      district: 'Tirupati',
+      city: 'Tirupati',
+    };
+    const VIJAYAWADA = {
+      id: 'location-vijayawada',
+      slug: 'ap-ntr-vijayawada',
+      state: 'Andhra Pradesh',
+      district: 'NTR',
+      city: 'Vijayawada',
+    };
+
+    // A distinct phone per test: `AuthService` allows three OTP requests for one
+    // number per ten minutes, so reusing a single number would make these fail on
+    // rate limiting rather than on the behaviour they are about.
+    const PHONE_SLUG = '+9198765432%02d';
+
+    beforeEach(() => {
+      prisma.professionalProfile.create.mockClear();
+      prisma.user.create.mockClear();
+      prisma.user.findUnique.mockReset();
+      prisma.user.create.mockImplementation(
+        async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'placed-professional',
+          email: null,
+          phone: data.phone,
+          fullName: 'Placed Professional',
+          role: 'PROFESSIONAL',
+          status: 'ACTIVE',
+          passwordHash: 'generated-hash',
+        }),
+      );
+    });
+
+    afterEach(() => {
+      prisma.location.findUnique.mockReset();
+      prisma.location.findUnique.mockResolvedValue(null);
+    });
+
+    it('stores the resolved location id on the new professional profile', async () => {
+      const phone = PHONE_SLUG.replace('%02d', '12');
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.location.findUnique.mockResolvedValue(TIRUPATI);
+
+      const otpResponse = await request(app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone, role: 'PROFESSIONAL', locationSlug: TIRUPATI.slug })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register/verify-otp')
+        .send({
+          phone,
+          role: 'PROFESSIONAL',
+          otp: otpResponse.body.data.otp,
+          locationSlug: TIRUPATI.slug,
+        })
+        .expect(200);
+
+      // The id, never the slug or a name: the slug is what the dataset uses, the
+      // column is a reference.
+      expect(prisma.professionalProfile.create).toHaveBeenCalledWith({
+        data: {
+          userId: 'placed-professional',
+          businessName: 'New Professional',
+          locationId: TIRUPATI.id,
+        },
+      });
+    });
+
+    it('leaves the location unset when the professional skips the picker', async () => {
+      const phone = PHONE_SLUG.replace('%02d', '13');
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      const otpResponse = await request(app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone, role: 'PROFESSIONAL' })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register/verify-otp')
+        .send({ phone, role: 'PROFESSIONAL', otp: otpResponse.body.data.otp })
+        .expect(200);
+
+      // No `locationId: null` either - absent is how "not chosen" is stored, so a
+      // later profile update can distinguish it from an explicit clear.
+      expect(prisma.professionalProfile.create).toHaveBeenCalledWith({
+        data: { userId: 'placed-professional', businessName: 'New Professional' },
+      });
+      expect(prisma.location.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('refuses an unknown slug at the request stage, before any code is issued', async () => {
+      const phone = PHONE_SLUG.replace('%02d', '14');
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone, role: 'PROFESSIONAL', locationSlug: 'ap-nowhere-nowhere' })
+        .expect(400);
+
+      expect(prisma.location.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('refuses a slug that is well-formed but not in the dataset', async () => {
+      const phone = PHONE_SLUG.replace('%02d', '15');
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone, role: 'PROFESSIONAL', locationSlug: 'atlantis-mars-city' })
+        .expect(400);
+
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('reports an unseeded dataset as a server problem, not a bad request', async () => {
+      const phone = PHONE_SLUG.replace('%02d', '16');
+      prisma.user.findUnique.mockResolvedValue(null);
+      // The slug is real but the row is missing because the location seed has not
+      // been run. The professional did nothing wrong.
+      prisma.location.findUnique.mockResolvedValue(null);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register/request-otp')
+        .send({ phone, role: 'PROFESSIONAL', locationSlug: VIJAYAWADA.slug })
+        .expect(503);
     });
   });
 

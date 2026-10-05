@@ -19,6 +19,7 @@
     "db:migrate": "node ../../scripts/prisma.mjs migrate dev",
     "db:deploy": "node ../../scripts/prisma.mjs migrate deploy",
     "db:seed": "node ../../scripts/prisma.mjs db seed",
+    "db:seed:locations": "ts-node prisma/seed-locations.ts",
     "db:seed:catalog": "ts-node prisma/seed-catalog.ts",
     "db:reset": "node ../../scripts/prisma.mjs migrate reset --force",
     "db:studio": "node ../../scripts/prisma.mjs studio",

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { PROFESSIONAL_VERIFICATION_STATUSES } from '@helpzy/types';
 
 import {
+  marketplaceLocationSchema,
   professionalReviewSchema,
   professionalServiceOfferingSchema,
   workingHoursSchema,
@@ -31,6 +32,15 @@ const professionalSchema = z.object({
   bio: z.string().nullable(),
   verification: z.enum(PROFESSIONAL_VERIFICATION_STATUSES),
   serviceArea: z.string().nullable(),
+  /**
+   * Where the professional trades.
+   *
+   * Nullable because a direct profile link can legitimately reach a professional
+   * who has not set one. On the *listing* endpoints the server guarantees this is
+   * non-null, because those queries are location-filtered - the guarantee lives in
+   * the query, not in this schema.
+   */
+  location: marketplaceLocationSchema.nullable(),
   averageRating: z.number().nonnegative().optional(),
   ratingCount: z.number().int().nonnegative().optional(),
 });

@@ -276,6 +276,17 @@ model ProfessionalProfile {
   ratingCount    Int                @default(0)
   completedCount Int                @default(0)
 
+  /// The place this professional trades in. This is the marketplace location, and
+  /// it is a reference rather than free text so that "Tirupati", "tirupati" and
+  /// "TIRUPATI" can never become three different places.
+  ///
+  /// Nullable on purpose: a professional who registered before this existed has
+  /// no verified location, and inventing one would put them in a city they may not
+  /// serve. A null location means "not in any city's marketplace", and the
+  /// professional is prompted to complete it from their profile.
+  locationId   String?   @db.Uuid
+  location     Location? @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
   // Marketplace profile details the professional owns. All nullable so an
   // existing profile renders an honest empty state instead of invented data.
   yearsOfExperience Int?
@@ -300,7 +311,42 @@ model ProfessionalProfile {
   bookings              Booking[]              @relation("BookingProfessional")
   verificationDocuments VerificationDocument[]
 
+  @@index([locationId], map: "professional_profiles_location_id_key")
   @@map("professional_profiles")
+}
+
+/// A place HELPZY trades in, identified by the triple (state, district, city).
+///
+/// One row per tradable place, written by the location seed from the single
+/// dataset in `@helpzy/config`. Having a row rather than three free-text columns
+/// is what makes the marketplace filter exact: the API resolves a submitted slug
+/// to one `id` and matches on that, so duplicate city names in different
+/// districts cannot collide and no spelling variant can fork a place in two.
+model Location {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// Derived key such as `ap-tirupati-tirupati`. This is what the API accepts,
+  /// so callers never construct or guess a primary key.
+  slug         String   @unique @db.VarChar(96)
+  stateCode    String   @db.Char(2)
+  state        String
+  districtSlug String   @db.VarChar(64)
+  district     String
+  citySlug     String   @db.VarChar(64)
+  city         String
+  /// Approximate city centroid. Used only to turn a device GPS fix into a city
+  /// the customer can confirm; never used to rank or measure anything.
+  latitude     Decimal  @db.Decimal(9, 6)
+  longitude    Decimal  @db.Decimal(9, 6)
+  /// A well-known city, so the picker can offer a short curated list instead of
+  /// the whole dataset.
+  isMajor      Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  professionals ProfessionalProfile[]
+
+  @@map("locations")
 }
 
 model ServiceCategory {

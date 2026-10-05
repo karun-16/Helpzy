@@ -15,6 +15,7 @@ import { API_ERROR_CODES, ROLES, type Role } from '@helpzy/types';
 import type { Prisma } from '@prisma/client';
 import { APP_CONFIG, type AppConfigRef } from '../config/app-config.token';
 import { PrismaService } from '../database/prisma.service';
+import { LocationCatalogService } from '../location-catalog/location-catalog.service';
 
 export interface AuthSessionPayload {
   sub: string;
@@ -148,6 +149,7 @@ export class AuthService {
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfigRef,
     private readonly prisma: PrismaService,
+    private readonly locations: LocationCatalogService,
   ) {}
 
   async requestOtp(phone: string): Promise<{
@@ -208,6 +210,7 @@ export class AuthService {
   async requestRegistrationOtp(
     phone: string,
     role: 'CUSTOMER' | 'PROFESSIONAL',
+    locationSlug?: string,
   ): Promise<{
     phone: string;
     status: 'OTP_SENT';
@@ -218,6 +221,12 @@ export class AuthService {
     this.assertOtpRequestAllowed(normalizedPhone);
     if (await this.findUserByPhone(normalizedPhone)) {
       throw this.existingAccountException();
+    }
+
+    // Rejected here rather than at verification so the picker reports an unknown
+    // place immediately, instead of after the customer has already entered a code.
+    if (role === ROLES.PROFESSIONAL) {
+      await this.locations.optional(locationSlug);
     }
 
     const code = this.createOtpCode();
@@ -262,8 +271,13 @@ export class AuthService {
     phone: string,
     otp: string,
     role: 'CUSTOMER' | 'PROFESSIONAL',
+    locationSlug?: string,
   ): Promise<{ token: string; user: AuthSessionUser; mfaRequired: boolean }> {
     const normalizedPhone = this.normalizePhone(phone);
+
+    // Resolved before the OTP is consumed, so a bad location cannot burn a code.
+    const location =
+      role === ROLES.PROFESSIONAL ? await this.locations.optional(locationSlug) : null;
 
     const challenge = await this.loadRegistrationChallenge(normalizedPhone);
 
@@ -319,7 +333,14 @@ export class AuthService {
           await transaction.customerProfile.create({ data: { userId: createdUser.id } });
         } else {
           await transaction.professionalProfile.create({
-            data: { userId: createdUser.id, businessName: fullName },
+            data: {
+              userId: createdUser.id,
+              businessName: fullName,
+              // Null when the professional skipped the picker. They are then in
+              // no city's marketplace until they complete their profile, which
+              // is better than being filed under a place they never chose.
+              ...(location ? { locationId: location.id } : {}),
+            },
           });
         }
 

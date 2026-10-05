@@ -14,6 +14,34 @@ export interface WorkingHour {
   end: string;
 }
 
+/**
+ * A place HELPZY trades in, as it travels over the wire.
+ *
+ * `slug` is the identity the client stores and the API filters by; the names are
+ * present only so the UI can print them. Coordinates are never sent: they exist to
+ * resolve a GPS fix to a city, and once that is done they are discarded.
+ */
+export interface MarketplaceLocation {
+  slug: string;
+  state: string;
+  district: string;
+  city: string;
+}
+
+/**
+ * What the customer currently wants to find services in.
+ *
+ * Kept deliberately separate from a customer profile address and from the
+ * professional's own location: browsing another city must not require editing
+ * where you live, and a customer's registered address must never silently decide
+ * which marketplace they see.
+ */
+export interface MarketplaceLocationSelection {
+  location: MarketplaceLocation;
+  /** How the customer arrived at it, so the UI can explain itself. */
+  source: 'detected' | 'manual';
+}
+
 /** A saved service address owned by one customer. */
 export interface CustomerAddress {
   id: string;
@@ -65,6 +93,7 @@ export interface ProfessionalMarketplaceProfile {
   verification: ProfessionalVerificationStatus;
   verificationNote?: string | null;
   serviceArea: string | null;
+  location: MarketplaceLocation | null;
   avatarUrl: string | null;
   contactEmail?: string | null;
   phone?: string;
@@ -110,6 +139,13 @@ export interface ProfessionalOwnProfile {
   businessName: string;
   bio: string | null;
   serviceArea: string | null;
+  /**
+   * The place this professional trades in, or null when they have not set one.
+   *
+   * Null is meaningful: it means the professional is not listed in any city's
+   * marketplace, not that they are in an unknown one.
+   */
+  location: MarketplaceLocation | null;
   contactEmail: string | null;
   isPhoneVisible: boolean;
   yearsOfExperience: number | null;
@@ -129,6 +165,14 @@ export interface ProfessionalProfileUpdate {
   businessName?: string;
   bio?: string | null;
   serviceArea?: string | null;
+  /**
+   * Set or clear the professional's marketplace location.
+   *
+   * A slug rather than free text, and validated against the shared dataset on the
+   * server, so "Tirupati" cannot be stored as a different place from "tirupati".
+   * `null` clears it and returns the professional to no city's marketplace.
+   */
+  locationSlug?: string | null;
   contactEmail?: string | null;
   isPhoneVisible?: boolean;
   yearsOfExperience?: number | null;

@@ -196,6 +196,14 @@ describe('seedCatalogue', () => {
 
   function createFakePrisma() {
     const calls: Recorded[] = [];
+    /*
+     * Places are seeded first, because the professionals below are filed under
+     * them. A keyless stub here would make every professional silently locationless
+     * and let the suite pass on a seed that cannot actually list anybody.
+     */
+    const locations = new Map<string, { id: string; slug: string }>();
+    let locationSequence = 0;
+
     const users = new Map<
       string,
       {
@@ -219,6 +227,29 @@ describe('seedCatalogue', () => {
     };
 
     const prisma: CataloguePrisma = {
+      location: {
+        findUnique: async (args: { where: { slug: string } }) => {
+          record('location', 'findUnique', args);
+          return locations.get(args.where.slug) ?? null;
+        },
+        upsert: async (args: { where: { slug: string }; create: { slug: string } }) => {
+          record('location', 'upsert', args);
+          const existing = locations.get(args.where.slug);
+          const id = existing?.id ?? `location-${++locationSequence}`;
+          locations.set(args.where.slug, { id, slug: args.where.slug });
+          return { slug: args.where.slug };
+        },
+        findMany: async () => {
+          // Nothing is ever stale in this fake, so the prune has nothing to do.
+          return [];
+        },
+        deleteMany: async () => {
+          throw new Error('the catalogue seed must not delete locations');
+        },
+      },
+      professionalProfile: {
+        count: async () => 0,
+      },
       user: {
         findUnique: async (args) => {
           record('user', 'findUnique', args);
@@ -280,6 +311,8 @@ describe('seedCatalogue', () => {
     await seedCatalogue(fake.prisma);
 
     expect([...new Set(fake.calls.map((call) => call.model))].sort()).toEqual([
+      // Reference data: the places professionals are filed under.
+      'location',
       'professionalProfile',
       'service',
       'serviceCategory',

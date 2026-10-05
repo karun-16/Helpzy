@@ -24,6 +24,22 @@ export const otpCodeSchema = z
   .trim()
   .regex(/^\d{6}$/, 'Enter the 6 digit code');
 
+/**
+ * A marketplace location key, such as `ap-tirupati-tirupati`.
+ *
+ * Shaped rather than free text so the server can reject nonsense before it
+ * becomes a query. This checks the *form* only - whether the slug names a real
+ * place is decided against the shared dataset in `@helpzy/config`, because that
+ * dataset is the single source of truth and a hard-coded list here would be a
+ * second one that could drift.
+ */
+export const marketplaceLocationSlugSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'That is not a location we recognise');
+
 export const fullNameSchema = z
   .string()
   .trim()

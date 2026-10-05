@@ -25,6 +25,8 @@ import {
   type PaymentStatus,
 } from '@helpzy/types';
 
+import { marketplaceLocationSlugSchema } from './primitives';
+
 /* ------------------------------------------------------------------ shared */
 
 const isoDateTime = z.string().datetime({ offset: true });
@@ -117,6 +119,14 @@ export const professionalReviewSchema = z.object({
   createdAt: isoDateTime,
 });
 
+export const marketplaceLocationSchema = z.object({
+  slug: z.string(),
+  state: z.string(),
+  district: z.string(),
+  city: z.string(),
+});
+export type MarketplaceLocationDto = z.infer<typeof marketplaceLocationSchema>;
+
 export const professionalMarketplaceProfileSchema = z.object({
   id: z.string().uuid(),
   fullName: z.string(),
@@ -125,6 +135,7 @@ export const professionalMarketplaceProfileSchema = z.object({
   verification: z.enum(PROFESSIONAL_VERIFICATION_STATUSES),
   verificationNote: z.string().nullable().optional(),
   serviceArea: z.string().nullable(),
+  location: marketplaceLocationSchema.nullable(),
   avatarUrl: z.string().nullable(),
   contactEmail: z.string().nullable().optional(),
   phone: z.string().optional(),
@@ -158,6 +169,7 @@ export const professionalOwnProfileSchema = z.object({
   businessName: z.string(),
   bio: z.string().nullable(),
   serviceArea: z.string().nullable(),
+  location: marketplaceLocationSchema.nullable(),
   contactEmail: z.string().nullable(),
   isPhoneVisible: z.boolean(),
   yearsOfExperience: z.number().int().nonnegative().nullable(),
@@ -183,6 +195,8 @@ export const updateProfessionalProfileSchema = z
     businessName: z.string().trim().min(2).max(160).optional(),
     bio: z.string().trim().max(4000).nullable().optional(),
     serviceArea: z.string().trim().max(200).nullable().optional(),
+    /** `null` clears the location and returns the professional to no marketplace. */
+    locationSlug: marketplaceLocationSlugSchema.nullable().optional(),
     contactEmail: z.string().trim().email().max(200).nullable().optional(),
     isPhoneVisible: z.boolean().optional(),
     yearsOfExperience: z.number().int().min(0).max(80).nullable().optional(),
@@ -738,6 +752,7 @@ export const adminProfessionalDetailSchema = z.object({
   businessName: z.string(),
   bio: z.string().nullable(),
   serviceArea: z.string().nullable(),
+  location: marketplaceLocationSchema.nullable(),
   contactEmail: z.string().nullable(),
   isPhoneVisible: z.boolean(),
   yearsOfExperience: z.number().int().nonnegative().nullable(),
@@ -812,6 +827,7 @@ export const adminVerificationRequestSchema = z.object({
   businessName: z.string(),
   bio: z.string().nullable(),
   serviceArea: z.string().nullable(),
+  location: marketplaceLocationSchema.nullable(),
   verification: z.enum(PROFESSIONAL_VERIFICATION_STATUSES),
   verifiedAt: nullableDateTime,
   rejectionNote: z.string().nullable(),

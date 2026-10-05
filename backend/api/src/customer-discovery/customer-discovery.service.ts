@@ -34,12 +34,6 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
  * overrides `professionalProfile` to add the verification condition, and an inferred
  * literal type would narrow that field to `{ isNot: null }` and reject the extra key.
  */
-export const AVAILABLE_PROFESSIONAL_FILTER: Prisma.UserWhereInput = {
-  role: ROLES.PROFESSIONAL,
-  status: 'ACTIVE',
-  professionalProfile: { isNot: null },
-};
-
 /**
  * Only real, verifiable data reaches the customer-facing profile.
  *
@@ -56,31 +50,50 @@ export class CustomerDiscoveryService {
   ) {}
 
   /**
-   * The professional filter for public listing, widened by the verification
-   * setting when an operator has asked for it.
+   * The professional filter for public listing.
    *
-   * Read per request rather than cached here: `PlatformSettingsService` already
-   * caches the document for a short window, so this costs no extra query in the
-   * common case and cannot serve a stale "verified only" policy after an admin
-   * turns it off.
+   * `locationId` is the load-bearing clause: when the customer has chosen a
+   * marketplace location, only professionals registered in that exact place can
+   * satisfy this filter. The restriction is expressed in the query itself, so no
+   * other professional's row is ever read and then discarded.
+   *
+   * A professional with no location is excluded by construction - a null
+   * `locationId` cannot equal a resolved location - which is the honest outcome
+   * for someone who has not told us where they work.
+   *
+   * When no location is supplied the profile condition is omitted entirely and the
+   * unfiltered listing is byte-for-byte the query that shipped before locations
+   * existed. That is deliberate: `location` is an optional parameter for
+   * compatibility, so a caller that omits it must get the previous behaviour, and
+   * the marketplace still never omits it.
    */
-  private async availableProfessionalFilter(): Promise<Prisma.UserWhereInput> {
+  private async availableProfessionalFilter(
+    locationId: string | null,
+  ): Promise<Prisma.UserWhereInput> {
+    const base: Prisma.UserWhereInput = { role: ROLES.PROFESSIONAL, status: 'ACTIVE' };
     const { service } = await this.settings.current();
-    if (!service.requireVerifiedForDiscovery) return AVAILABLE_PROFESSIONAL_FILTER;
+    const requireVerified = service.requireVerifiedForDiscovery;
+
+    // Nothing to restrict by: the plain "has a profile" filter, unchanged.
+    if (!locationId && !requireVerified) {
+      return { ...base, professionalProfile: { isNot: null } };
+    }
+
+    const profileFilter: Prisma.ProfessionalProfileWhereInput = {
+      ...(locationId ? { locationId } : {}),
+      ...(requireVerified ? { verification: PROFESSIONAL_VERIFICATION_STATUSES.VERIFIED } : {}),
+    };
+
     return {
-      role: ROLES.PROFESSIONAL,
-      status: 'ACTIVE',
-      // `is` rather than spreading the base filter: Prisma treats `{ isNot: null }`
-      // and `{ is: { ... } }` as different filter shapes and will not accept a
-      // field condition alongside `isNot`. `is` already implies the profile exists.
-      professionalProfile: {
-        is: { verification: PROFESSIONAL_VERIFICATION_STATUSES.VERIFIED },
-      },
+      ...base,
+      // `is` rather than `isNot: null` because Prisma will not accept a field
+      // condition alongside `isNot`. `is` already implies the profile exists.
+      professionalProfile: { is: profileFilter },
     };
   }
 
-  async getCategories(): Promise<CustomerServiceCategory[]> {
-    const professional = await this.availableProfessionalFilter();
+  async getCategories(locationId: string | null): Promise<CustomerServiceCategory[]> {
+    const professional = await this.availableProfessionalFilter(locationId);
     const categories = await this.prisma.serviceCategory.findMany({
       where: {
         isActive: true,
@@ -112,8 +125,8 @@ export class CustomerDiscoveryService {
     return categories;
   }
 
-  async getProfessionalsForService(serviceId: string) {
-    const professional = await this.availableProfessionalFilter();
+  async getProfessionalsForService(serviceId: string, locationId: string | null) {
+    const professional = await this.availableProfessionalFilter(locationId);
     const service = await this.prisma.service.findFirst({
       where: {
         id: serviceId,
@@ -152,8 +165,16 @@ export class CustomerDiscoveryService {
     };
   }
 
+  /**
+   * A single professional's public profile.
+   *
+   * Deliberately *not* location-filtered: this is a direct link, not a listing, so
+   * someone who was sent a professional's profile can still open it. Only the
+   * existing availability rules apply. Nothing private is exposed here beyond what
+   * the profile has always shown.
+   */
   async getProfessionalProfile(professionalId: string) {
-    const professional = await this.availableProfessionalFilter();
+    const professional = await this.availableProfessionalFilter(null);
     const user = await this.prisma.user.findFirst({
       where: { id: professionalId, ...professional },
       select: {
@@ -186,8 +207,10 @@ export class CustomerDiscoveryService {
     return profile;
   }
 
-  async getAvailableProfessionals(): Promise<CustomerProfessionalProfile[]> {
-    const professional = await this.availableProfessionalFilter();
+  async getAvailableProfessionals(
+    locationId: string | null,
+  ): Promise<CustomerProfessionalProfile[]> {
+    const professional = await this.availableProfessionalFilter(locationId);
     const users = await this.prisma.user.findMany({
       where: {
         ...professional,
@@ -343,6 +366,9 @@ const PROFILE_SUMMARY_SELECT = {
   bio: true,
   verification: true,
   serviceArea: true,
+  // The four display fields only - never `latitude`/`longitude`. A customer's
+  // marketplace does not need a professional's city centroid.
+  location: { select: { slug: true, state: true, district: true, city: true } },
   averageRating: true,
   ratingCount: true,
   contactEmail: true,
@@ -356,6 +382,7 @@ type ProfileSummary = {
   bio: string | null;
   verification: CustomerProfessional['verification'];
   serviceArea: string | null;
+  location: { slug: string; state: string; district: string; city: string } | null;
   averageRating: { toNumber: () => number };
   ratingCount: number;
   contactEmail: string | null;
@@ -391,6 +418,7 @@ function toProfessionalSummary(user: {
     bio: profile.bio,
     verification: profile.verification,
     serviceArea: profile.serviceArea,
+    location: profile.location,
     // An unrated professional has no average at all. Inventing 0.0 would read as
     // "terrible reviews" rather than "no reviews yet".
     ...(profile.ratingCount > 0

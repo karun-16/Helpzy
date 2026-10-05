@@ -36,14 +36,19 @@ export class AuthController {
   @HttpCode(200)
   async requestRegistrationOtp(@Body() body: unknown) {
     const parsed = requestRegistrationOtpSchema.parse(body);
-    return this.authService.requestRegistrationOtp(parsed.phone, parsed.role);
+    return this.authService.requestRegistrationOtp(parsed.phone, parsed.role, parsed.locationSlug);
   }
 
   @Post('auth/register/verify-otp')
   @HttpCode(200)
   async verifyRegistrationOtp(@Body() body: unknown) {
     const parsed = verifyRegistrationOtpSchema.parse(body);
-    return this.authService.verifyRegistrationOtp(parsed.phone, parsed.otp, parsed.role);
+    return this.authService.verifyRegistrationOtp(
+      parsed.phone,
+      parsed.otp,
+      parsed.role,
+      parsed.locationSlug,
+    );
   }
 
   @Get('auth/me')

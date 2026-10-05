@@ -12,6 +12,11 @@ export interface VerifyOtpPayload {
 export interface RequestRegistrationOtpPayload {
   phone: string;
   role: 'CUSTOMER' | 'PROFESSIONAL';
+  /**
+   * Where a professional trades. Optional; when omitted the professional completes
+   * it from their profile. Validated server-side against the shared dataset.
+   */
+  locationSlug?: string;
 }
 
 export interface VerifyRegistrationOtpPayload extends RequestRegistrationOtpPayload {
