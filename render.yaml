@@ -43,7 +43,9 @@ services:
       corepack pnpm install --frozen-lockfile &&
       corepack pnpm build
 
-    startCommand: node backend/api/dist/main.js
+    startCommand: >-
+      node scripts/prisma.mjs migrate deploy &&
+      node backend/api/dist/main.js
 
     # The API reads Render's PORT and binds 0.0.0.0 automatically in production.
     healthCheckPath: /api/v1/health
