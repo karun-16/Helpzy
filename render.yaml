@@ -69,7 +69,7 @@ services:
       # hostname; a wildcard is rejected at start-up by design, because this API
       # is credentialed.
       - key: API_CORS_ORIGINS
-        value: https://<service-name>.onrender.com
+        value: https://helpzy.onrender.com
 
       # Absolute public base for stored media. Left as the relative default the
       # API derives root-relative URLs from, which is correct only while the web
